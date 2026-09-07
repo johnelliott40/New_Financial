@@ -1,0 +1,119 @@
+{
+  "_note": "Federal/CA/payroll tax bracket and threshold data, keyed by tax year. Sourced from IRS Rev. Proc. 2025-32 (federal 2026), IRS Rev. Proc. 2024-40 (federal 2025), and CA FTB Schedules X/Y/Z (2025) — cross-checked against at least two independent published sources as of Aug 2026. See modules/tax.py and PROJECT_PLAN.md 'Tax methodology'. CA 2026 brackets were not yet published by the FTB as of this writing, so 2025 CA figures are held fixed for 2026 as a documented placeholder — refresh when the FTB publishes (typically fall of the year in question). Bracket arrays are [[lower_bound, rate], ...] ascending, upper bound implied by the next entry (last entry's rate applies to everything above its lower_bound).",
+  "2025": {
+    "federal_brackets": {
+      "single": [[0, 0.10], [11925, 0.12], [48475, 0.22], [103350, 0.24], [197300, 0.32], [250525, 0.35], [626350, 0.37]],
+      "mfj": [[0, 0.10], [23850, 0.12], [96950, 0.22], [206700, 0.24], [394600, 0.32], [501050, 0.35], [751600, 0.37]],
+      "hoh": [[0, 0.10], [17000, 0.12], [64850, 0.22], [103350, 0.24], [197300, 0.32], [250500, 0.35], [626350, 0.37]]
+    },
+    "standard_deduction": { "single": 15750, "mfj": 31500, "hoh": 23625 },
+    "ltcg_brackets": {
+      "single": [[0, 0.00], [48350, 0.15], [533400, 0.20]],
+      "mfj": [[0, 0.00], [96700, 0.15], [600050, 0.20]],
+      "hoh": [[0, 0.00], [64750, 0.15], [566700, 0.20]]
+    },
+    "niit_threshold": { "single": 200000, "mfj": 250000, "hoh": 200000 },
+    "addl_medicare_threshold": { "single": 200000, "mfj": 250000, "hoh": 200000 },
+    "fica": {
+      "ss_wage_base": 176100,
+      "ss_rate": 0.062,
+      "medicare_rate": 0.0145,
+      "se_ss_rate": 0.124,
+      "se_medicare_rate": 0.029,
+      "se_net_earnings_factor": 0.9235
+    },
+    "casdi_rate": 0.012,
+    "qbi_thresholds": {
+      "single": { "full_deduction_ceiling": 197300, "phaseout_ceiling": 247300 },
+      "hoh": { "full_deduction_ceiling": 197300, "phaseout_ceiling": 247300 },
+      "mfj": { "full_deduction_ceiling": 394600, "phaseout_ceiling": 494600 }
+    },
+    "ss_taxability_thresholds": {
+      "single": { "tier1": 25000, "tier2": 34000 },
+      "hoh": { "tier1": 25000, "tier2": 34000 },
+      "mfj": { "tier1": 32000, "tier2": 44000 }
+    },
+    "ca_brackets": {
+      "single": [[0, 0.01], [11079, 0.02], [26264, 0.04], [41452, 0.06], [57542, 0.08], [72724, 0.093], [371479, 0.103], [445771, 0.113], [742953, 0.123]],
+      "mfj": [[0, 0.01], [22158, 0.02], [52528, 0.04], [82904, 0.06], [115084, 0.08], [145448, 0.093], [742958, 0.103], [891542, 0.113], [1485906, 0.123]],
+      "hoh": [[0, 0.01], [22173, 0.02], [52530, 0.04], [67716, 0.06], [83805, 0.08], [98990, 0.093], [505208, 0.103], [606251, 0.113], [1010417, 0.123]]
+    },
+    "ca_standard_deduction": { "single": 5706, "mfj": 11412, "hoh": 11412 },
+    "ca_mhst_threshold": 1000000,
+    "ca_mhst_rate": 0.01,
+    "k401_limits": {
+      "elective_deferral_limit": 23500,
+      "catchup_50_to_59": 7500,
+      "catchup_60_to_63": 11250,
+      "annual_additions_limit": 70000
+    },
+    "ira_limits": {
+      "_note": "IRS Notice 2024-80 / Rev. Proc. 2024-40. Traditional and Roth IRA contributions share ONE combined annual limit (IRC §219(b)) — there is no separate Traditional-only or Roth-only figure. 2025 was the last year before the IRA catch-up itself became inflation-indexed under SECURE 2.0 (that started 2026) — see 2026's own ira_limits._note.",
+      "contribution_limit": 7000,
+      "catchup_50": 1000,
+      "roth_phase_out": {
+        "single": { "lower": 150000, "upper": 165000 },
+        "hoh": { "lower": 150000, "upper": 165000 },
+        "mfj": { "lower": 236000, "upper": 246000 }
+      }
+    }
+  },
+  "2026": {
+    "federal_brackets": {
+      "single": [[0, 0.10], [12400, 0.12], [50400, 0.22], [105700, 0.24], [201775, 0.32], [256225, 0.35], [640600, 0.37]],
+      "mfj": [[0, 0.10], [24800, 0.12], [100800, 0.22], [211400, 0.24], [403550, 0.32], [512450, 0.35], [768700, 0.37]],
+      "hoh": [[0, 0.10], [17700, 0.12], [67450, 0.22], [105700, 0.24], [201775, 0.32], [256200, 0.35], [640600, 0.37]]
+    },
+    "standard_deduction": { "single": 16100, "mfj": 32200, "hoh": 24150 },
+    "ltcg_brackets": {
+      "single": [[0, 0.00], [49450, 0.15], [545500, 0.20]],
+      "mfj": [[0, 0.00], [98900, 0.15], [613700, 0.20]],
+      "hoh": [[0, 0.00], [66200, 0.15], [579600, 0.20]]
+    },
+    "niit_threshold": { "single": 200000, "mfj": 250000, "hoh": 200000 },
+    "addl_medicare_threshold": { "single": 200000, "mfj": 250000, "hoh": 200000 },
+    "fica": {
+      "ss_wage_base": 184500,
+      "ss_rate": 0.062,
+      "medicare_rate": 0.0145,
+      "se_ss_rate": 0.124,
+      "se_medicare_rate": 0.029,
+      "se_net_earnings_factor": 0.9235
+    },
+    "casdi_rate": 0.013,
+    "qbi_thresholds": {
+      "single": { "full_deduction_ceiling": 201750, "phaseout_ceiling": 276750 },
+      "hoh": { "full_deduction_ceiling": 201750, "phaseout_ceiling": 276750 },
+      "mfj": { "full_deduction_ceiling": 403500, "phaseout_ceiling": 553500 }
+    },
+    "ss_taxability_thresholds": {
+      "single": { "tier1": 25000, "tier2": 34000 },
+      "hoh": { "tier1": 25000, "tier2": 34000 },
+      "mfj": { "tier1": 32000, "tier2": 44000 }
+    },
+    "ca_brackets": {
+      "single": [[0, 0.01], [11079, 0.02], [26264, 0.04], [41452, 0.06], [57542, 0.08], [72724, 0.093], [371479, 0.103], [445771, 0.113], [742953, 0.123]],
+      "mfj": [[0, 0.01], [22158, 0.02], [52528, 0.04], [82904, 0.06], [115084, 0.08], [145448, 0.093], [742958, 0.103], [891542, 0.113], [1485906, 0.123]],
+      "hoh": [[0, 0.01], [22173, 0.02], [52530, 0.04], [67716, 0.06], [83805, 0.08], [98990, 0.093], [505208, 0.103], [606251, 0.113], [1010417, 0.123]]
+    },
+    "ca_standard_deduction": { "single": 5706, "mfj": 11412, "hoh": 11412 },
+    "ca_mhst_threshold": 1000000,
+    "ca_mhst_rate": 0.01,
+    "k401_limits": {
+      "elective_deferral_limit": 24500,
+      "catchup_50_to_59": 8000,
+      "catchup_60_to_63": 11250,
+      "annual_additions_limit": 72000
+    },
+    "ira_limits": {
+      "_note": "IRS Notice 2025-67. 2026 is the first year the IRA catch-up itself is inflation-indexed under SECURE 2.0 (it was a fixed $1,000 every year before this). MFS phase-out range ($0-$10,000) is fixed by statute, never inflation-indexed, and is NOT included here — this model's FILING_STATUSES (modules/tax.py) doesn't include 'mfs' at all (out of v1 scope, same as the rest of the tax module), so there is no filing-status key that would need it.",
+      "contribution_limit": 7500,
+      "catchup_50": 1100,
+      "roth_phase_out": {
+        "single": { "lower": 153000, "upper": 168000 },
+        "hoh": { "lower": 153000, "upper": 168000 },
+        "mfj": { "lower": 242000, "upper": 252000 }
+      }
+    }
+  }
+}

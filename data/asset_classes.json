@@ -1,0 +1,19 @@
+{
+  "_note": "Canonical asset classes and default nominal-return assumptions (long-run capital-market assumptions, gross of fees). Per PROJECT_PLAN.md Step 1, this file holds the model assumption only — which ticker belongs to which class, and any in-session edit to a class's return, is personal data and lives in session state / saved states, not here. Editable: change default_nominal_return to update the model's starting assumption for everyone.",
+  "asset_classes": [
+    { "code": "USD_CASH", "label": "Cash (USD)", "default_nominal_return": 0.0 },
+    { "code": "STT", "label": "Short-Term Treasury Bonds", "default_nominal_return": 0.038 },
+    { "code": "MTT", "label": "Mid-Term Treasury Bonds", "default_nominal_return": 0.041 },
+    { "code": "LTT", "label": "Long-Term Treasury Bonds", "default_nominal_return": 0.049 },
+    { "code": "US", "label": "US Total Market", "default_nominal_return": 0.065 },
+    { "code": "USV", "label": "US Value", "default_nominal_return": 0.068 },
+    { "code": "USSCV", "label": "US Small-Cap Value", "default_nominal_return": 0.0785 },
+    { "code": "DM", "label": "Developed Markets ex-US", "default_nominal_return": 0.07 },
+    { "code": "DMSCV", "label": "Developed Markets Small-Cap Value", "default_nominal_return": 0.08 },
+    { "code": "EXUS", "label": "All-World ex-US", "default_nominal_return": 0.069 },
+    { "code": "EXUSV", "label": "All-World ex-US Value", "default_nominal_return": 0.075 },
+    { "code": "EM", "label": "Emerging Markets", "default_nominal_return": 0.072 },
+    { "code": "TOT", "label": "Total World", "default_nominal_return": 0.066 },
+    { "code": "TOTV", "label": "Total World Value", "default_nominal_return": 0.071 }
+  ]
+}

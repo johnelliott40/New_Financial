@@ -1,0 +1,245 @@
+{
+  "_note": "SSA Benefit Formula Bend Points (PIA formula) AND Quarter-of-Coverage (QC) earnings thresholds, Social Security Administration Office of the Chief Actuary. Bend points source: https://www.ssa.gov/oact/cola/bendpoints.html (retrieved 2026-08-31). QC threshold source: https://www.ssa.gov/oact/cola/QC.html (retrieved 2026-08-31, historical table 1978-2026 -- 1978 itself, $250/QC, is not included here since this file starts at 1979 to match the bend points table's own range). Bend points keyed by YEAR OF ELIGIBILITY (age 62/disability/death); qc_threshold is the earnings needed for one quarter of coverage (credit) in that SAME calendar year, capped at 4 credits/year no matter how high earnings are -- modules/social_security.py applies the CURRENT (or eligibility-year) qc_threshold flat across every year of a real earnings record (does not look up each historical year's own threshold), the same documented simplification already used for the SS wage base (2026-08-30). All dollar amounts are monthly (bend points) or annual (qc_threshold), nominal for their own year -- both held flat in real terms for any year beyond the last one configured, same convention as modules/tax.py's own bracket tables. 2026-09-06 addition: 'earnings_test_lower_exempt'/'earnings_test_higher_exempt' (Retirement Earnings Test annual exempt amounts, https://www.ssa.gov/news/en/cola/factsheets/2026.html and https://www.ssa.gov/benefits/retirement/planner/whileworking.html, both retrieved 2026-09-06) -- lower applies to every year strictly BEFORE the one Full Retirement Age is reached in ($1 withheld per $2 earned above it), higher applies only to the FRA year itself, only to earnings before the month FRA is reached ($1 withheld per $3 earned above it; this table has no sub-annual precision, so modules/social_security.py applies it to the full FRA year -- a documented, flagged approximation, see that module's own docstring). **A REAL, IMPORTANT SEMANTIC DIFFERENCE from bend_point_1/bend_point_2/qc_threshold above: these two new fields are keyed by the CALENDAR YEAR being evaluated, not year of eligibility** -- modules/social_security.py's earnings_test_exempt_amounts_for_year looks them up by the literal projected year directly, never by ssa_effective_birth_year(...)+62 the way bend_points_for_year/qc_threshold_for_year do; only added starting 2026 (the year this feature shipped) since a real caller only ever evaluates a current-or-future year, never before.",
+  "1979": {
+    "bend_point_1": 180,
+    "bend_point_2": 1085,
+    "qc_threshold": 260
+  },
+  "1980": {
+    "bend_point_1": 194,
+    "bend_point_2": 1171,
+    "qc_threshold": 290
+  },
+  "1981": {
+    "bend_point_1": 211,
+    "bend_point_2": 1274,
+    "qc_threshold": 310
+  },
+  "1982": {
+    "bend_point_1": 230,
+    "bend_point_2": 1388,
+    "qc_threshold": 340
+  },
+  "1983": {
+    "bend_point_1": 254,
+    "bend_point_2": 1528,
+    "qc_threshold": 370
+  },
+  "1984": {
+    "bend_point_1": 267,
+    "bend_point_2": 1612,
+    "qc_threshold": 390
+  },
+  "1985": {
+    "bend_point_1": 280,
+    "bend_point_2": 1691,
+    "qc_threshold": 410
+  },
+  "1986": {
+    "bend_point_1": 297,
+    "bend_point_2": 1790,
+    "qc_threshold": 440
+  },
+  "1987": {
+    "bend_point_1": 310,
+    "bend_point_2": 1866,
+    "qc_threshold": 460
+  },
+  "1988": {
+    "bend_point_1": 319,
+    "bend_point_2": 1922,
+    "qc_threshold": 470
+  },
+  "1989": {
+    "bend_point_1": 339,
+    "bend_point_2": 2044,
+    "qc_threshold": 500
+  },
+  "1990": {
+    "bend_point_1": 356,
+    "bend_point_2": 2145,
+    "qc_threshold": 520
+  },
+  "1991": {
+    "bend_point_1": 370,
+    "bend_point_2": 2230,
+    "qc_threshold": 540
+  },
+  "1992": {
+    "bend_point_1": 387,
+    "bend_point_2": 2333,
+    "qc_threshold": 570
+  },
+  "1993": {
+    "bend_point_1": 401,
+    "bend_point_2": 2420,
+    "qc_threshold": 590
+  },
+  "1994": {
+    "bend_point_1": 422,
+    "bend_point_2": 2545,
+    "qc_threshold": 620
+  },
+  "1995": {
+    "bend_point_1": 426,
+    "bend_point_2": 2567,
+    "qc_threshold": 630
+  },
+  "1996": {
+    "bend_point_1": 437,
+    "bend_point_2": 2635,
+    "qc_threshold": 640
+  },
+  "1997": {
+    "bend_point_1": 455,
+    "bend_point_2": 2741,
+    "qc_threshold": 670
+  },
+  "1998": {
+    "bend_point_1": 477,
+    "bend_point_2": 2875,
+    "qc_threshold": 700
+  },
+  "1999": {
+    "bend_point_1": 505,
+    "bend_point_2": 3043,
+    "qc_threshold": 740
+  },
+  "2000": {
+    "bend_point_1": 531,
+    "bend_point_2": 3202,
+    "qc_threshold": 780
+  },
+  "2001": {
+    "bend_point_1": 561,
+    "bend_point_2": 3381,
+    "qc_threshold": 830
+  },
+  "2002": {
+    "bend_point_1": 592,
+    "bend_point_2": 3567,
+    "qc_threshold": 870
+  },
+  "2003": {
+    "bend_point_1": 606,
+    "bend_point_2": 3653,
+    "qc_threshold": 890
+  },
+  "2004": {
+    "bend_point_1": 612,
+    "bend_point_2": 3689,
+    "qc_threshold": 900
+  },
+  "2005": {
+    "bend_point_1": 627,
+    "bend_point_2": 3779,
+    "qc_threshold": 920
+  },
+  "2006": {
+    "bend_point_1": 656,
+    "bend_point_2": 3955,
+    "qc_threshold": 970
+  },
+  "2007": {
+    "bend_point_1": 680,
+    "bend_point_2": 4100,
+    "qc_threshold": 1000
+  },
+  "2008": {
+    "bend_point_1": 711,
+    "bend_point_2": 4288,
+    "qc_threshold": 1050
+  },
+  "2009": {
+    "bend_point_1": 744,
+    "bend_point_2": 4483,
+    "qc_threshold": 1090
+  },
+  "2010": {
+    "bend_point_1": 761,
+    "bend_point_2": 4586,
+    "qc_threshold": 1120
+  },
+  "2011": {
+    "bend_point_1": 749,
+    "bend_point_2": 4517,
+    "qc_threshold": 1120
+  },
+  "2012": {
+    "bend_point_1": 767,
+    "bend_point_2": 4624,
+    "qc_threshold": 1130
+  },
+  "2013": {
+    "bend_point_1": 791,
+    "bend_point_2": 4768,
+    "qc_threshold": 1160
+  },
+  "2014": {
+    "bend_point_1": 816,
+    "bend_point_2": 4917,
+    "qc_threshold": 1200
+  },
+  "2015": {
+    "bend_point_1": 826,
+    "bend_point_2": 4980,
+    "qc_threshold": 1220
+  },
+  "2016": {
+    "bend_point_1": 856,
+    "bend_point_2": 5157,
+    "qc_threshold": 1260
+  },
+  "2017": {
+    "bend_point_1": 885,
+    "bend_point_2": 5336,
+    "qc_threshold": 1300
+  },
+  "2018": {
+    "bend_point_1": 895,
+    "bend_point_2": 5397,
+    "qc_threshold": 1320
+  },
+  "2019": {
+    "bend_point_1": 926,
+    "bend_point_2": 5583,
+    "qc_threshold": 1360
+  },
+  "2020": {
+    "bend_point_1": 960,
+    "bend_point_2": 5785,
+    "qc_threshold": 1410
+  },
+  "2021": {
+    "bend_point_1": 996,
+    "bend_point_2": 6002,
+    "qc_threshold": 1470
+  },
+  "2022": {
+    "bend_point_1": 1024,
+    "bend_point_2": 6172,
+    "qc_threshold": 1510
+  },
+  "2023": {
+    "bend_point_1": 1115,
+    "bend_point_2": 6721,
+    "qc_threshold": 1640
+  },
+  "2024": {
+    "bend_point_1": 1174,
+    "bend_point_2": 7078,
+    "qc_threshold": 1730
+  },
+  "2025": {
+    "bend_point_1": 1226,
+    "bend_point_2": 7391,
+    "qc_threshold": 1810
+  },
+  "2026": {
+    "bend_point_1": 1286,
+    "bend_point_2": 7749,
+    "qc_threshold": 1890,
+    "earnings_test_lower_exempt": 24480,
+    "earnings_test_higher_exempt": 65160
+  }
+}
