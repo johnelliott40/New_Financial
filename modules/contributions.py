@@ -7,31 +7,60 @@ destination now has an explicit, per-year MODE the user controls directly — ma
 custom amount that's always checked against that year's real legal limit — rather than a single
 year-wide "waterfall on/off" switch with a six-raw-dollar-field override grid underneath it.
 
-Two genuinely separate stages, matching the spec's own framing (its own quoted words):
+Two genuinely separate stages — **Targets** (this module's four `resolve_*` functions: for each
+destination, what's the *legally allowed* amount given this year's mode? Entirely a function of
+earned income + IRS limits, never of whether the money is actually there to spend — pure, no
+cash-flow input at all) and **Funding** (`fund_from_available_cash`: given a Stage-1 target and
+whatever cash pool the CALLER hands it, cap the target at what's actually there). Every function in
+this module is unchanged by any of the three calling-order designs below — what's changed, three
+times now, is the ORDER and CASH SOURCE `modules/projection.py`'s per-year loop calls them in.
 
-    "First we build a method to allocate what dollars should be contributed to retirement accounts
-    based on earned income, then we pay expenses and use the remaining dollars to contribute to
-    the accounts — first 401k, then roth, then traditional, then taxable."
+**Current calling order (2026-09-07, NEXT.md "contribution hierarchy v3: revert cash order to
+401(k) first" — supersedes the SAME DAY's earlier "Roth IRA before 401(k)" design directly below
+for the cash-order question)**: 401(k) resolves FIRST again (matching the original 2026-08-16
+design's order — see further down), but KEEPS the affordability guarantee the intermediate "Roth
+first" design introduced, rather than reopening the bug that motivated it. Concretely, in
+`modules/projection.py`'s per-year loop: (0) a baseline check, entirely independent of any
+contribution election, decides whether earned income alone — with the ENTIRE 401(k) family forced
+to `$0` — already falls short of expenses; if so, everything gets `$0` that year and the existing
+dissaving mechanism takes over (this is the ONLY dissaving trigger — unchanged from the
+intermediate design); (1) otherwise, `resolve_401k_target`'s own "custom"-mode target/apportionment
+logic is reused inside a fixed-point iteration (mirroring `modules/projection.py`'s own
+withdrawal-sizing loop) to find the LARGEST 401(k)-family contribution — up to its own full legal
+ceiling — that still leaves enough to cover expenses ALONE (not yet netting out Roth/Traditional,
+which haven't been decided); (2) `resolve_roth_ira_target`/`resolve_traditional_ira_target`/
+`fund_from_available_cash` run from whatever's left AFTER 401(k), using the REAL (now fully known)
+401(k) amount for MAGI directly — no more "$0 401(k) hypothetical" tax call, a genuine
+simplification the reorder itself provides for free; (3) Taxable absorbs whatever remains. See
+`modules/projection.py`'s own module docstring ("Contributions") for the complete mechanism and the
+worked reasoning for each step — this module's own four functions below are unchanged either way;
+only the caller's sequencing is.
 
-- **Stage 1 — Targets** (`resolve_401k_target`, `resolve_roth_ira_target`,
-  `resolve_traditional_ira_target`, this module): for each destination, what's the *legally
-  allowed* amount given this year's mode? Entirely a function of earned income + IRS limits —
-  never of whether the money is actually there to spend. Pure, no cash-flow input at all.
-- **Stage 2 — Funding** (`fund_from_available_cash`, this module): given the Stage-1 IRA targets,
-  and what's actually left of liquid cash after tax and expenses, fund Roth IRA, then Traditional
-  IRA, then Taxable (uncapped, guaranteed) — each capped at `min(its own target, whatever cash
-  remains)`.
+**Intermediate design (2026-09-07, "Roth IRA before 401(k)" — kept for history/context, no longer
+how `modules/projection.py` calls this module; superseded by the design above, same day)**: Roth
+IRA/Traditional IRA resolved BEFORE the 401(k) family, funded from the pre-401(k) surplus, with
+401(k) sized last from whatever was left. Solved the original design's dissaving bug (below) by
+making 401(k) cash-aware, but needed a dedicated "$0 401(k), real everything else" tax call for
+MAGI (Roth resolving before 401(k) is known) and a specially-deferred `discretionary_spending`
+computation to avoid a real double-counting bug discovered mid-build (see NEXT.md's own write-up).
+Replaced at the user's own request ("it sounds like it would be better to put it back to 401k
+first") once it became clear the SAME affordability guarantee could be kept under the original cash
+order — see the design above, which is a strict simplification over this one for the ordering
+question (deletes the MAGI workaround and the deferred discretionary_spending placement entirely,
+not just moves them).
 
-**One asymmetry, preserved from the prior (correct) codebase, not something this redesign
-changes**: 401(k) is NOT part of Stage 2 at all. It's a payroll deduction — money that leaves your
-paycheck *before* it ever becomes liquid cash, not something funded from after-tax profit the way
-Roth IRA/Traditional IRA/Taxable are. So Stage 1's 401(k) target is funded up to its own legal
-ceiling directly (bounded only by compensation — you can't defer more than you earned — never by
-"is there enough cash left after expenses," since there's no such constraint on a payroll
-deduction). The caller (`modules/projection.py`) computes tax *with* that real deduction applied
-first, and only *then* sizes the cash pool Roth IRA/Traditional IRA/Taxable compete for in Stage 2.
-Building the 401(k) target as though it were also gated on available cash would be a real
-regression from what's correct today — flagged here so it isn't rebuilt that way later.
+**Original design (2026-08-16 — kept for history/context)**: 401(k) resolved FIRST, cash-blind — a
+payroll deduction bounded only by compensation, never by "is there enough cash left after
+expenses" — with `total_tax`/`net_income` then computed WITH that real deduction applied, and Roth
+IRA/Traditional IRA/Taxable competing afterward for whatever cash was actually left
+(`fund_from_available_cash`). The 2026-09-07 "Roth first" redesign above replaced this ordering
+specifically because a cash-blind-and-FIRST 401(k) target could force a share sale (dissaving)
+purely from an aggressive election, even in a year with genuinely sufficient earned income — see
+NEXT.md's own "contribution hierarchy redesign" note for the full repro and reasoning. The CURRENT
+design (top of this docstring) restores this order's cash-flow sequence while keeping that fix's own
+affordability guarantee — the underlying legal-limit math this module computes never needed to
+change across any of these three iterations; only which cash pool competed for what, and in which
+order, did.
 """
 
 from __future__ import annotations
