@@ -1,9 +1,57 @@
 # NEXT.md — Current state and next step
 
-Last updated: 2026-09-07 (42nd pass)
+Last updated: 2026-09-10 (43rd pass)
+
+## Latest session (2026-09-10): built the Results-tab chart/metric update queued directly below — all four sub-changes, verified live
+
+User's request: "update the charts based on next.md." Built exactly the four sub-changes in the
+"Results tab" note directly below (now labeled "Original queue (built above)") — `ui/projection_tab.py`
+only, no `modules/` changes, matching the note's own scope.
+
+**What changed**:
+1. Added "Average tax rate during retirement" `st.metric` to BOTH columns of the `stat_col1`/
+   `stat_col2` section — `stat_col1` via a fresh `average_retirement_tax_rate(rows)` call (newly
+   imported); `stat_col2` reuses the ALREADY-computed `adjusted_wealth_result["average_tax_rate"]`
+   local variable rather than a second, redundant call on the same rows (exactly as the note itself
+   flagged as the preferred style).
+2. `_retirement_income_chart` — removed `discretionary_income` from the `paired` tuple and the old
+   two-line loop entirely (kept only "Gross withdrawal").
+3. Added an explicit "Total net income" dashed reference line over the SS/Other stack, styled like
+   `_pre_retirement_overview_chart`'s own "Total gross income" line — replaces the old implicit
+   "label the stack's own top edge" call rather than sitting alongside it. Renamed (not added)
+   `_PLOTLY_COLORS["discretionary"]` → `_PLOTLY_COLORS["total_net_income"]` for this line's color —
+   same already-CVD-validated violet, just repurposed.
+4. Added an opt-in secondary percent axis to `_style_chart` (`secondary_y_title`/
+   `secondary_y_tickformat` params, default `None` — every other chart on the tab is unaffected) and
+   a new per-year "Effective tax rate" line (`retirement_taxes_paid / total_withdrawal_income`, a
+   `None` gap in a year with no withdrawal income — same convention `average_retirement_tax_rate`
+   uses for its own average) plotted on it.
+
+**One deviation from the note's own literal snippet, flagged rather than followed to the letter**:
+the note's own `tax_rate` list comprehension used `p[6]`/`p[1]` — those indices assumed a 7-element
+tuple that doesn't match what the same note's own "remove discretionary_income from the tuple"
+instruction produces. Built the tuple as `(year, total_withdrawal_income, net_retirement_income,
+ss_after_tax_income, other_after_tax_income, retirement_taxes_paid)` (6 elements) and indexed
+correctly against THAT shape (`p[5]`/`p[1]`) rather than reproducing the note's own off-by-one.
+
+**Verification**: 601 tests passing (this tab's chart builders have no existing unit tests to
+update, confirmed by the note itself — `average_retirement_tax_rate` itself is unchanged and
+already covered). pyflakes clean. Verified live via AppTest against the user's own real
+`saved_states/real_portfolio.json` scenario: 0 exceptions, only the same pre-existing "not fully
+insured" informational banner unrelated to this change; captured the actual Plotly figures from
+both chart call sites and confirmed the trace list is exactly `['Tax', 'Social Security (after
+tax)', 'Other (after tax)', 'Gross withdrawal', 'Total net income', 'Effective tax rate']` (no
+"Discretionary income"), "Effective tax rate" sits on a real `yaxis2` (percent-formatted, right
+side, no gridlines), and both new "Average tax rate during retirement" metrics render real values
+(24.5% / 13.8% in this scenario).
+
+**Branching note**: this was built on a fresh branch off `main` (`results-tab-tax-rate-chart`), NOT
+on top of the still-open, unmerged `contribution-hierarchy-401k-first` PR — the two are unrelated
+(this note's own functions/fields all pre-date that work) and keeping them as separate PRs avoids
+tangling an unrelated feature into either review.
 
 
-## Queued request from user (2026-09-10) — Results tab: average retirement tax rate as a metric and as a dual-axis chart line; drop "Discretionary income" from the two retirement-income charts in favor of an explicit "Total net income" line
+## Original queue (built above, 2026-09-10) — Results tab: average retirement tax rate as a metric and as a dual-axis chart line; drop "Discretionary income" from the two retirement-income charts in favor of an explicit "Total net income" line
 
 **User's own words**: "add the average tax rate during retirement to the two column approach in the
 results tab in the projection tab. ... remove discretionary income from the total retirement income

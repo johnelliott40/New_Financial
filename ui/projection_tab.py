@@ -40,6 +40,7 @@ from modules.projection import (
     adjusted_wealth_via_retirement_tax_rate,
     average_annual_field,
     average_annual_net_retirement_income,
+    average_retirement_tax_rate,
     portfolio_value,
     project_multi_year,
     project_no_income_no_expense_baseline,
@@ -95,12 +96,14 @@ _PLOTLY_COLORS = {
     "profit_neg": "#e66767",
     "wealth_base": "#3987e5",  # same as "gross" -- the "as-planned" scenario, per the spec's own table
     "wealth_baseline": "#9085e9",
-    # "Discretionary income" is a third line on the retirement-income chart the spec's own validated
-    # pairs don't cover (its explicit color table only validates 2-color pairings) -- reusing the
-    # already-validated violet (PASSES against blue at CVD ΔE 13.0) rather than picking an unvalidated
-    # fourth hue; blue/aqua/violet are conventionally distinct enough under CVD that this is a
-    # reasonable, flagged extension, not a blind guess.
-    "discretionary": "#9085e9",
+    # 2026-09-10, user request — was "discretionary" (the retirement-income chart's now-removed
+    # "Discretionary income" line); repurposed, not replaced, for the new "Total net income"
+    # reference line the same chart now draws instead. The underlying CVD reasoning is unchanged:
+    # this violet is a third line the redesign spec's own validated pairs don't cover (its explicit
+    # color table only validates 2-color pairings) -- reusing the already-validated hue (PASSES
+    # against blue at CVD ΔE 13.0, distinct from the teal/yellow the stack already uses) rather than
+    # picking an unvalidated new one.
+    "total_net_income": "#9085e9",
     # 2026-08-31, user request — the retirement-income chart's own Social Security vs. Other
     # stacked-area split (see _retirement_income_chart). Reuses the same yellow already validated
     # and in use elsewhere on this tab (_ACCOUNT_TYPE_COLORS' "Roth 401(k)" slot, PLOTLY_CHART_
@@ -174,6 +177,8 @@ def _style_chart(
     y_max: float | None = None,
     allow_negative: bool = False,
     show_legend: bool = True,
+    secondary_y_title: str | None = None,
+    secondary_y_tickformat: str = ".0%",
 ) -> None:
     """
     Shared styling applied to every chart on this tab (PLOTLY_CHART_REDESIGN.md §2-§4) — the single
@@ -197,6 +202,13 @@ def _style_chart(
       negative (a dissaving year, a shortfall year, Profit itself) — forcing `tozero` there would
       silently CLIP those values off the bottom of the chart, which is worse than no headroom logic
       at all.
+    - **Opt-in secondary (right-side) axis** (2026-09-10, user request — `_retirement_income_chart`'s
+      own "Effective tax rate" line): `secondary_y_title=None` (the default) leaves every chart
+      exactly as before, single dollar axis only. Passing a title adds a second, independent y-axis
+      (`yaxis2`, `overlaying="y"`, `side="right"`) for a trace on a genuinely different scale (a
+      percentage, not a dollar amount) to share the plot area without being squashed onto — or
+      distorting — the dollar axis. No gridlines of its own (`showgrid=False`) so it doesn't add a
+      second, unrelated gridline set fighting the existing dollar gridlines.
     """
     fig.update_layout(
         title=dict(text=title, font=dict(color=_PLOTLY_COLORS["text_primary"], size=16)),
@@ -250,6 +262,20 @@ def _style_chart(
         if y_max is not None and y_max > 0:
             y_axis_kwargs["range"] = [0, y_max * 1.15]
     fig.update_yaxes(**y_axis_kwargs)
+
+    if secondary_y_title is not None:
+        fig.update_layout(
+            yaxis2=dict(
+                title=secondary_y_title,
+                tickformat=secondary_y_tickformat,
+                overlaying="y",
+                side="right",
+                showgrid=False,
+                automargin=True,
+                linecolor=_PLOTLY_COLORS["axis"],
+                color=_PLOTLY_COLORS["text_secondary"],
+            )
+        )
 
 
 _PRE_RETIREMENT_STACK_COLORS = {
@@ -520,13 +546,8 @@ def _retirement_income_chart(rows: list[dict], title: str = "Total retirement in
     """RETIREMENT_REPORTING_AUDIT.md §2.4 point 2 (2026-08-13) — the withdrawal-phase counterpart to
     the pre-retirement overview chart: total cash actually raised from the portfolio
     (`total_withdrawal_income`) vs. what's left after tax (`net_retirement_income`), same shaded-
-    band-for-tax visual convention, plus a third line — `discretionary_income` (2026-08-14 fix, NOT
-    `funding_gap`: a user-caught bug — `funding_gap` is a deliberately PRE-TAX diagnostic and can
-    legitimately exceed `net_retirement_income` in a normal year with a large realized-gain tax
-    bill, which broke the "discretionary income can't exceed net income" constraint this line is
-    supposed to honor; `discretionary_income = net_retirement_income - spending_need` is computed
-    on the AFTER-TAX figure instead, so it never can — see modules/projection.py's own docstring).
-    Only ever called with withdrawal-phase rows (`is_withdrawal_year`) — see the call site.
+    band-for-tax visual convention. Only ever called with withdrawal-phase rows
+    (`is_withdrawal_year`) — see the call site.
 
     The tax-burden band (net to gross) is a DERIVED reference region, not a data series
     (PLOTLY_CHART_REDESIGN.md §6.2) — no legend entry, no hover of its own, and filled with a
@@ -539,28 +560,39 @@ def _retirement_income_chart(rows: list[dict], title: str = "Total retirement in
     summing to exactly the same `net_retirement_income` total as before (`modules.projection`'s own
     `ss_after_tax_income`/`other_after_tax_income`, a real split of the existing total via a
     second, SS-zeroed `compute_taxes` pass — see that module's own docstring for why this is
-    correct where a flat blended rate wouldn't be). The Tax wash and Gross withdrawal/Discretionary
-    income lines are otherwise unchanged — the wash's own top edge is still `net_retirement_income`
-    (now the stack's own total height), so it sits directly on top of the two-color stack instead
-    of an empty line."""
+    correct where a flat blended rate wouldn't be). The Tax wash is otherwise unchanged — its own
+    top edge is still `net_retirement_income` (now the stack's own total height), so it sits
+    directly on top of the two-color stack instead of an empty line.
+
+    **2026-09-10, user request**: `discretionary_income` (2026-08-14's own line — see git history/
+    NEXT.md for that fix's write-up if it's ever needed again) is REMOVED — replaced by an explicit
+    "Total net income" reference line drawn over the SS/Other stack (same un-stacked-total-over-a-
+    stack convention `_pre_retirement_overview_chart`'s own "Total gross income" line already uses),
+    plus a per-year "Effective tax rate" line (`retirement_taxes_paid / total_withdrawal_income`,
+    same convention `modules.projection.average_retirement_tax_rate` already uses for its own
+    average — a `None` gap, not a `0%`, in any year with no withdrawal income at all) on a new,
+    opt-in secondary percent axis (`_style_chart`'s `secondary_y_title`)."""
     paired = [
         (
-            r["year"], r["total_withdrawal_income"], r["net_retirement_income"], r["discretionary_income"],
-            r["ss_after_tax_income"], r["other_after_tax_income"],
+            r["year"], r["total_withdrawal_income"], r["net_retirement_income"],
+            r["ss_after_tax_income"], r["other_after_tax_income"], r["retirement_taxes_paid"],
         )
         for r in rows
         if r["total_withdrawal_income"] is not None
         and r["net_retirement_income"] is not None
-        and r["discretionary_income"] is not None
         and r["ss_after_tax_income"] is not None
         and r["other_after_tax_income"] is not None
+        and r["retirement_taxes_paid"] is not None
     ]
     years = [p[0] for p in paired]
     gross = [p[1] for p in paired]
     net = [p[2] for p in paired]
-    discretionary = [p[3] for p in paired]
-    ss_after_tax = [p[4] for p in paired]
-    other_after_tax = [p[5] for p in paired]
+    ss_after_tax = [p[3] for p in paired]
+    other_after_tax = [p[4] for p in paired]
+    # Same "a year with no withdrawal income doesn't get a rate" convention
+    # `modules.projection.average_retirement_tax_rate` uses for its own average — here it's a `None`
+    # gap (Plotly draws a break in the line) rather than a row excluded from an average.
+    tax_rate = [(p[5] / p[1]) if p[1] else None for p in paired]
 
     fig = go.Figure()
     if years:
@@ -596,10 +628,7 @@ def _retirement_income_chart(rows: list[dict], title: str = "Total retirement in
                 hovertemplate="<b>$%{y:,.0f}</b><extra>" + name + "</extra>",
             )
         )
-    for values, name, color in (
-        (gross, "Gross withdrawal", _PLOTLY_COLORS["gross"]),
-        (discretionary, "Discretionary income", _PLOTLY_COLORS["discretionary"]),
-    ):
+    for values, name, color in ((gross, "Gross withdrawal", _PLOTLY_COLORS["gross"]),):
         fig.add_trace(
             go.Scatter(
                 x=years,
@@ -613,17 +642,49 @@ def _retirement_income_chart(rows: list[dict], title: str = "Total retirement in
         )
         if years:
             _dollar_end_label(fig, years[-1], values[-1], color)
-    if years:
-        # The stack's own total (= net_retirement_income) gets the same end-of-line label
-        # treatment as every other series that's actually a headline number on this chart —
-        # labeling only the top of the stack, not each band underneath it (PLOTLY_CHART_REDESIGN.md
-        # §5.1's own "label the endpoint... never every point").
-        _dollar_end_label(fig, years[-1], net[-1], _PLOTLY_COLORS["net"])
 
-    all_values = gross + net + discretionary
+    # "Total net income" (2026-09-10) — the un-stacked total drawn over the SS/Other stack, same
+    # role/styling `_pre_retirement_overview_chart`'s own "Total gross income" reference line plays
+    # there (dashed, no markers, its own end label) — REPLACES the old implicit "label the stack's
+    # own top edge" call this line used to be, rather than sitting alongside a second label at the
+    # same point.
+    fig.add_trace(
+        go.Scatter(
+            x=years,
+            y=net,
+            mode="lines",
+            name="Total net income",
+            line=dict(width=2, color=_PLOTLY_COLORS["total_net_income"], dash="dash"),
+            hovertemplate="<b>$%{y:,.0f}</b><extra>Total net income</extra>",
+        )
+    )
+    if years:
+        _dollar_end_label(fig, years[-1], net[-1], _PLOTLY_COLORS["total_net_income"])
+
+    # "Effective tax rate" (2026-09-10) — a per-year context line on its own secondary percent axis;
+    # no end-of-line dollar label (`_dollar_end_label` hardcodes a `$` format, and this is a percent,
+    # not a dollar figure — same "no end label" treatment the Tax wash and other pure-context
+    # elements on this chart already get).
+    fig.add_trace(
+        go.Scatter(
+            x=years,
+            y=tax_rate,
+            mode="lines+markers",
+            name="Effective tax rate",
+            yaxis="y2",
+            line=dict(width=2, color=_PLOTLY_COLORS["text_primary"], dash="dot"),
+            marker=dict(size=4, color=_PLOTLY_COLORS["text_primary"]),
+            hovertemplate="<b>%{y:.1%}</b><extra>Effective tax rate</extra>",
+        )
+    )
+
+    all_values = gross + net
     has_negative = any(v < 0 for v in all_values)
     y_max = max(all_values) if all_values else 0
-    _style_chart(fig, title=title, height=480, y_max=y_max, allow_negative=has_negative)
+    _style_chart(
+        fig, title=title, height=480, y_max=y_max, allow_negative=has_negative,
+        secondary_y_title="Effective tax rate",
+    )
     return fig
 
 
@@ -1675,6 +1736,18 @@ def render() -> None:
             "every other income source this same year fixed. Sums with the row above back to "
             "'Avg. annual net retirement income.'",
         )
+        # 2026-09-10, user request.
+        avg_tax_rate_retirement = average_retirement_tax_rate(rows)
+        st.metric(
+            "Average tax rate during retirement",
+            f"{avg_tax_rate_retirement:.1%}" if avg_tax_rate_retirement is not None else "—",
+            help="Plain average, across every withdrawal-phase year, of that year's own effective "
+            "tax rate (Taxes paid / Gross withdrawal — see the Retirement income table below). Not "
+            "a marginal rate, and not the same figure used to discount 401(k) contributions in the "
+            "Pre-retirement wealth table above (that one is federal-marginal-rate-weighted; this "
+            "one is the plain effective-rate average already used by the Adjusted wealth metric "
+            "above).",
+        )
     with stat_col2:
         st.markdown("**If you stopped earning & spending today**")
         baseline_wealth_at_retirement = _wealth_at_retirement(baseline_rows)
@@ -1702,6 +1775,23 @@ def render() -> None:
             "Net income without SS",
             f"${baseline_avg_other_after_tax:,.0f}" if baseline_avg_other_after_tax is not None else "—",
             help="Same figure, computed on the no-income/no-expense baseline above.",
+        )
+        # 2026-09-10, user request — reuses `adjusted_wealth_result["average_tax_rate"]` (computed
+        # earlier in this function via `adjusted_wealth_via_retirement_tax_rate(baseline_rows,
+        # discount_rate)`) rather than a second, redundant `average_retirement_tax_rate(baseline_
+        # rows)` call — both are the identical computation on the identical rows; reusing the
+        # existing value avoids a redundant pass over `baseline_rows` and keeps this metric visibly
+        # tied to the exact number already feeding the "Adjusted wealth" metric's own help text
+        # above, rather than two separately-computed figures that must coincidentally agree.
+        baseline_avg_tax_rate_retirement = (
+            adjusted_wealth_result["average_tax_rate"] if adjusted_wealth_result is not None else None
+        )
+        st.metric(
+            "Average tax rate during retirement",
+            f"{baseline_avg_tax_rate_retirement:.1%}" if baseline_avg_tax_rate_retirement is not None else "—",
+            help="Same figure, computed on the no-income/no-expense baseline above — this is the "
+            "exact rate already feeding the 'Adjusted wealth (today, net of future taxes)' "
+            "metric's own calculation further up the page.",
         )
 
     # RETIREMENT_REPORTING_AUDIT.md §2.4 point 1 (2026-08-13, confirmed with the user): gross_income/
