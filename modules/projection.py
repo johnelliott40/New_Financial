@@ -151,63 +151,133 @@ def project_multi_year(
     real earned income between Savings stop date and Income end date, if any, keeps flowing through
     `gross_w2`/`gross_se`/`gross_income`/`total_tax` exactly like any other year.
 
-    **Contributions (CONTRIBUTION_TOGGLE_REDESIGN.md, 2026-08-16 — replaces the old priority-order
-    waterfall + manual-override dual-branch entirely)**: `contribution_config_by_year`, optional
+    **Contributions (2026-09-07, NEXT.md "contribution hierarchy v3: revert cash order to 401(k)
+    first" — Part A only; supersedes the SAME DAY's earlier "Roth IRA before 401(k)" redesign for
+    the cash-order question, while KEEPING that redesign's affordability guarantee — see "Why this
+    isn't simply a revert to the original design," below)**: `contribution_config_by_year`, optional
     `{year: {"contribution_401k_mode", "contribution_401k_custom_amount",
     "contribution_401k_custom_type", "maximize_se_employer_401k", "roth_ira_mode",
     "roth_ira_custom_amount", "traditional_ira_mode", "traditional_ira_custom_amount"}}` — see
-    `modules.contributions`'s own module docstring for the full two-stage design. A year ABSENT
-    from this dict (or the dict itself `None`) falls back to
-    `modules.contributions.DEFAULT_CONTRIBUTION_CONFIG` — "custom, $0" everywhere, so every
-    existing caller/test that doesn't pass this parameter keeps its exact original $0-contribution
-    behavior, fully backward-compatible.
+    `modules.contributions`'s own module docstring for the four underlying target/funding
+    primitives (all UNCHANGED by either redesign — only the ORDER and CASH SOURCE they're called
+    with changed; see that module's own docstring for the current calling sequence). A year ABSENT
+    from this dict (or the dict itself `None`) falls back to `modules.contributions.
+    DEFAULT_CONTRIBUTION_CONFIG` — "custom, $0" everywhere, so every existing caller/test that
+    doesn't pass this parameter keeps its exact original $0-contribution behavior, fully
+    backward-compatible.
 
-    Every year, unconditionally (no more on/off toggle):
-    1. **Stage 1 — 401(k)-family** (`modules.contributions.resolve_401k_target`): a payroll
-       deduction, resolved directly from this year's mode against real IRS limits — never gated on
-       available cash (see that function's own docstring for why). `w2_401k_contribution_used`/
-       `roth_401k_contribution_used`/`se_401k_employee_contribution_used`/
-       `se_401k_employer_contribution_used` on the row reflect this; `total_tax`/`net_income` are
-       then computed WITH this real deduction already applied.
-    2. **Stage 2 — Roth IRA, then Traditional IRA, then Taxable** (`modules.contributions.
-       fund_from_available_cash`): `available_cash` = earned-income-only, post-tax (with the real
-       401(k) deduction credited), post-expense profit × `saving_fraction` — deliberately EXCLUDING
-       investment income already auto-reinvested by `roll_forward_portfolio` (the same double-
-       counting exclusion `investable` always used). Roth/Traditional IRA targets come from
-       `modules.contributions.resolve_roth_ira_target`/`resolve_traditional_ira_target` (Roth
-       resolves first, sharing one combined limit with Traditional — IRC §219(b); both structurally
-       gated on IRC §219(f)(1)'s earned-income requirement via `combined_ira_limit`, `$0` whenever
-       `gross_w2 + gross_se <= 0` that year, regardless of MAGI/phase-out math). Taxable is always
-       the genuine, guaranteed leftover — never an optional side-channel that could forget to get
-       populated (WATERFALL_STREAMLINE_REDESIGN.md §2.2's own fix, built into this system from the
-       start).
+    User's own framing (confirmed): "it sounds like it would be better to put it back to 401k first
+    and then roth/traditional IRA and then taxable." Every year, unconditionally:
+
+    - **Step 0 — baseline affordability, entirely independent of any contribution election,
+      UNCHANGED from the "Roth first" design (this check doesn't care about ordering)**:
+      `net_income_no_401k` = `gross_earned_income` (`gross_w2 + gross_se + gross_break`) minus tax
+      computed with the ENTIRE 401(k) family forced to `$0` — the same "earned-income-only"
+      isolation `earned_income_tax` uses elsewhere, just with 401(k) additionally zeroed. **This is
+      the ONLY condition that can trigger dissaving** (see "Dissaving," below) — a maximized 401(k)
+      can no longer itself be the reason a year can't pay its bills, because nothing past this point
+      can ever spend more than `net_income_no_401k` allows.
+    - **If `net_income_no_401k < gross_expense`**: 401(k), Roth IRA, and Traditional IRA all get
+      `$0` this year — there is no surplus to fund any of them, and (by the same monotonicity
+      argument used throughout this module) putting money into any of them would only make the
+      shortfall bigger, not smaller. The existing dissaving mechanism (below) covers the gap.
+    - **If `net_income_no_401k >= gross_expense`**:
+      1. **Step 1 — the 401(k) family, funded FIRST** (`modules.contributions.resolve_401k_target`,
+         UNCHANGED — same real IRS limits, same "custom mode" W-2-then-SE-employee apportionment,
+         reused for iteration instead of applied directly): a fixed-point solve finds the LARGEST
+         employee-side (W-2 + SE-employee) contribution, up to the mode's own full legal target,
+         such that funding it leaves `net_income_earned_only >= gross_expense` — **NOT** `+
+         roth_ira_used + traditional_ira_used` (those aren't decided yet; 401(k) gets first claim on
+         the surplus, exactly what "401(k) first" means). This ALWAYS has a solution — Step 0
+         already guarantees the `$0`-contribution case satisfies the constraint — so the iteration
+         is bounded and preserves the "401(k) can never itself force dissaving" guarantee from the
+         "Roth first" design, just reattached to this order. Converges because a pretax dollar costs
+         less than a dollar of take-home pay (the tax it saves) and a Roth dollar costs exactly a
+         dollar, never more, so raising/lowering the guess is always a genuine contraction (mirrors
+         the withdrawal-sizing loop's own convergence argument, Step 6 below).
+         `row["contribution_401k_iteration_count"]` records it (1-20, `None` in a shortfall year),
+         same convention as `withdrawal_iteration_count`. SE-employer
+         (`also_maximize_se_employer`) is the LOWEST priority within this step, reusing the same
+         technique, but only gets a turn once the employee side reached its OWN full target with
+         room to spare.
+      2. **Step 2 — Roth IRA, then Traditional IRA, funded from whatever's left AFTER 401(k)**
+         (`modules.contributions.resolve_roth_ira_target`/`resolve_traditional_ira_target`/
+         `fund_from_available_cash`, all UNCHANGED functions): `remaining_after_401k =
+         net_income_earned_only_after_401k - gross_expense` (using the REAL, now-already-known
+         401(k) amount from Step 1). `available_for_ira_and_taxable = remaining_after_401k *
+         saving_fraction` — 401(k) itself stays OUTSIDE this gate (unaffected by `saving_fraction`, a
+         payroll deduction, unchanged precedent). **MAGI for the Roth phase-out uses the REAL 401(k)
+         amount directly** — the row's own real `tax_result` (computed here, once 401(k) is known;
+         see below), no dedicated "$0 401(k) hypothetical" tax call needed anymore (that was a
+         genuine, now-eliminated approximation the "Roth first" design required — see "Why this
+         isn't simply a revert," below).
+      3. **Step 3 — Taxable absorbs whatever's left**: the genuine, guaranteed leftover, same as
+         always — never an optional side-channel that could forget to get populated
+         (WATERFALL_STREAMLINE_REDESIGN.md §2.2's own fix, unchanged).
+
+    `w2_401k_contribution_used`/`roth_401k_contribution_used`/`se_401k_employee_contribution_used`/
+    `se_401k_employer_contribution_used`/`roth_ira_contribution_used`/
+    `traditional_ira_contribution_used` on the row all reflect the FINAL, converged amounts from the
+    steps above; `total_tax`/`net_income` use `tax_result`, computed right after Step 1 (401(k)
+    already known at that point) — Roth/Traditional IRA contributions never feed back into
+    `compute_taxes` at all in this model (Roth: no tax effect; Traditional: no deduction modeled —
+    see `resolve_traditional_ira_target`'s own docstring), so this figure is already final
+    regardless of what Step 2 produces.
+
+    **Why this isn't simply a revert to the original (pre-2026-09-07) design**: the ORIGINAL design
+    resolved 401(k) fully, cash-blind, at its legal target — the exact mechanism that could force a
+    dissaving sale purely from an aggressive election, even in a year with genuinely sufficient
+    earned income (the bug this whole redesign thread started from). This version keeps Step 0's
+    affordability check and Step 1's fixed-point CAP (401(k) can spend AT MOST `net_income_no_401k -
+    gross_expense`, never more) — so the original bug cannot reopen, while the cash ORDER itself
+    (401(k), then Roth/Traditional IRA, then Taxable) matches the original and the user's own
+    request. A genuine best-of-both, not a partial revert.
+
+    **What changed about dissaving, concretely (unchanged from the "Roth first" design)**:
+    dissaving's trigger condition is "does earned income alone, with ZERO 401(k) contribution,
+    already fall short of expenses" (Step 0 above) — see "Dissaving," below, for the mechanics this
+    feeds.
 
     `phase_dates`: `{"savings_stop_date", "withdrawal_start_date", "ss_claim_date"}` (plain `date`
     objects; `retirement_date` above is reused as the fourth phase date automatically). Optional —
     `saving_fraction`/`withdrawing_fraction` default to `1.0`/`0.0` (i.e. "always accumulating,
-    never withdrawing") when omitted, so every year still resolves Stage 1/2 normally; only
-    `discretionary_spending` and the withdrawal-phase machinery need it supplied. **Validated once,
-    up front, not per-year** (2026-09-06, NEXT.md item B2): `withdrawal_start_date` may not precede
-    EITHER `retirement_date` or `savings_stop_date` — same-day is explicitly allowed, raises
+    never withdrawing") when omitted, so every year still resolves the contribution steps normally;
+    only `discretionary_spending` and the withdrawal-phase machinery need it supplied. **Validated
+    once, up front, not per-year** (2026-09-06, NEXT.md item B2): `withdrawal_start_date` may not
+    precede EITHER `retirement_date` or `savings_stop_date` — same-day is explicitly allowed, raises
     `ValueError` otherwise. This is what structurally guarantees `saving_fraction` reaches exactly
-    `0` no later than the year `withdrawing_fraction` turns positive, so Stage-2 voluntary
-    contributions (gated on `saving_fraction > 0`) and an active withdrawal can never coincide.
+    `0` no later than the year `withdrawing_fraction` turns positive, so a voluntary contribution
+    (gated on `saving_fraction > 0`) and an active withdrawal can never coincide.
 
     **Discretionary spending** (2026-09-06, NEXT.md item B1 — replaces the old "coasting-phase
     freeze," WATERFALL_STREAMLINE_REDESIGN.md §3, which forced `gross_w2`/`gross_se`/
     `gross_ordinary_break_income`/`gross_expense` all to `$0` between `savings_stop_date` and
     `withdrawal_start_date` regardless of whether real earned income was still happening — wrong
-    whenever `savings_stop_date` fell BEFORE `retirement_date`): `row["discretionary_spending"] =
-    max(0.0, profit_earned_only) - available_cash`. Since `available_cash` already equals
-    `max(0.0, profit_earned_only) * saving_fraction` (Stage 2, below, unchanged), this is exactly
-    `max(0.0, profit_earned_only) * (1 - saving_fraction)` — during full coasting (`saving_fraction
-    == 0`), 100% of the earned surplus becomes discretionary spending and `$0` becomes a new Stage-2
-    contribution; during normal accumulation (`saving_fraction == 1`) it's exactly `$0`, no change
-    to prior behavior. Investment income is untouched by this, by construction: `profit_earned_only`
-    is already built from `gross_earned_income` alone (dividends/interest were never part of it).
+    whenever `savings_stop_date` fell BEFORE `retirement_date`; 2026-09-07 — simplified again, and
+    bug-3-proof BY CONSTRUCTION, by the "401(k) first" v3 reorder): `row["discretionary_spending"] =
+    remaining_after_401k - available_for_ira_and_taxable` (algebraically `remaining_after_401k * (1
+    - saving_fraction)`, where `remaining_after_401k = net_income_earned_only_after_401k -
+    gross_expense` already has the REAL, final 401(k) amount netted out — see "Contributions,"
+    above) — the genuine leftover of the year's real earned-only surplus, AFTER 401(k), not yet
+    claimed by voluntary (Roth IRA/Traditional IRA/Taxable) saving. `$0.0` outright in a genuine
+    earned-income-shortfall year (Step 0 above — nothing to be discretionary about). Investment
+    income is untouched by this, by construction: `net_income_earned_only_after_401k` is already
+    built from `gross_earned_income` alone (dividends/interest were never part of it).
     `discretionary_spending` is a pure SINK — money leaving the model as spent, never tracked
-    further, not a second savings/investment bucket — it can never be negative by construction
-    (`max(0.0, ...)` already present in `available_cash` itself).
+    further, not a second savings/investment bucket — clamped at `$0` (Step 1's fixed-point solve
+    converges within a `$1` tolerance, not exactly, so a fully-affordable year can land a cent or
+    two on either side of the true break-even point — a real, harmless, sub-dollar residual of the
+    SAME kind `funding_gap`'s own docstring already documents for withdrawal sizing, not a bug).
+
+    **Why this formula is simpler than the "Roth first" design's own version needed (a genuine,
+    structural side benefit of reverting the order, not just symmetry for its own sake)**: that
+    design had to compute this LATE, from a special, deferred, end-of-function earned-only tax call
+    (`net_income_earned_only_final`), specifically to avoid double-counting a 401(k) contribution
+    made during coasting against the pre-401(k) baseline it started from (a real bug, found and fixed
+    mid-session — see NEXT.md's own write-up for the full story). Because 401(k) now resolves FIRST,
+    `remaining_after_401k` already has the real 401(k) amount netted out BEFORE this figure is ever
+    computed — there is no pre-401(k) baseline left to double-count against, so the formula is
+    correct by construction rather than by a special, late placement.
 
     `employer_match_rate`/`employer_match_cap_pct`: flat plan-design settings (not year-by-year),
     both defaulting to `0.0` — see `modules.tax.employer_401k_match`. The match never affects that
@@ -276,7 +346,8 @@ def project_multi_year(
     **Dissaving (Step 4, MODEL_WIRING.md §5.1 point 1)** — `draw_order`/`sale_method`: only
     meaningful when portfolio roll-forward is active. Any year where `year < retirement_date.year`
     AND `withdrawing_fraction <= 0` first nets an EARNED-income-only shortfall (`max(0.0,
-    -profit_earned_only)`, investment-income-EXCLUDED by construction) against this year's Taxable
+    gross_expense - net_income_no_401k)` — the "Contributions" section's own Step 0 baseline,
+    2026-09-07 redesign, investment-income-EXCLUDED by construction) against this year's Taxable
     dividend/interest (`dividend_used_for_expenses = min(gross_investment_income, earned_shortfall)`
     — see `row["dividend_used_for_expenses"]`), then sells assets ONLY for whatever remains
     (`remaining_shortfall`) dollar-for-dollar, via `modules.investing.draw_order_fill` — gated on
@@ -681,6 +752,7 @@ def project_multi_year(
             row["discretionary_spending"] = None
             row["notes"] = notes
             row["contribution_warnings"] = []
+            row["contribution_401k_iteration_count"] = None
             row["w2_401k_contribution_used"] = 0.0
             row["roth_401k_contribution_used"] = 0.0
             row["se_401k_employee_contribution_used"] = 0.0
@@ -745,6 +817,7 @@ def project_multi_year(
         contribution_warnings: list[str] = []
         contrib_config = (contribution_config_by_year or {}).get(year) or DEFAULT_CONTRIBUTION_CONFIG
         se_earnings = net_se_earnings_for_retirement(bracket_year, gross_w2, gross_se, bracket_table)
+        gross_earned_income = gross_w2 + gross_se + gross_break
 
         def _tax_for(pretax_401k, roth_401k, se_employee, se_employer):
             return compute_taxes(
@@ -769,40 +842,261 @@ def project_multi_year(
                 ordinary_break_income=gross_break,
             )
 
-        # ---- Stage 1: 401(k)-family target — a payroll deduction, resolved directly from this
-        # year's mode against real IRS limits, never gated on available cash (CONTRIBUTION_TOGGLE_
-        # REDESIGN.md §1/§2, 2026-08-16 — see modules.contributions's own module docstring for the
-        # full reasoning). ----
-        target_401k = resolve_401k_target(
-            mode=contrib_config.get("contribution_401k_mode", "custom"),
-            custom_amount=contrib_config.get("contribution_401k_custom_amount", 0.0),
-            custom_type=contrib_config.get("contribution_401k_custom_type", "pretax"),
-            also_maximize_se_employer=contrib_config.get("maximize_se_employer_401k", False),
-            tax_year=bracket_year,
-            age_at_year_end=age_at_year_end,
-            gross_w2=gross_w2,
-            se_earnings=se_earnings,
-            bracket_table=bracket_table,
-        )
-        w2_401k_used = target_401k["w2_pretax_target"]
-        roth_401k_used = target_401k["w2_roth_target"]
-        # SE solo 401(k) employee deferral has no pretax/Roth tax-treatment distinction in this
-        # model's tax engine (compute_taxes has a single se_solo_employee_deferral parameter) — a
-        # pre-existing limitation unrelated to and unchanged by this redesign; both targets sum
-        # into one dollar figure here (see resolve_401k_target's own docstring).
-        se_employee_used = target_401k["se_employee_pretax_target"] + target_401k["se_employee_roth_target"]
-        se_employer_used = target_401k["se_employer_target"]
-        # `target_401k["over_cap_warning"]` (2026-08-30, user request: removed from contribution_
-        # warnings/the UI banner/Notes column) is confirmed auto-corrected — resolve_401k_target's
-        # own w2_pretax_target/se_employee_pretax_target etc. above are ALREADY clamped to the
-        # legal §402(g) maximum regardless of whether this warning fires, so surfacing it added no
-        # information the math itself didn't already guarantee. See modules.contributions.
-        # resolve_401k_target's own docstring for the (still-computed, still-tested) field itself.
+        def _earned_only_tax_for(pretax_401k, roth_401k, se_employee, se_employer):
+            # The same "earned-income-only" isolation `earned_income_tax`/the old `earned_only_tax`
+            # used — investment income and Social Security zeroed out, `gross_break` left IN (it's
+            # part of `gross_earned_income` itself) — but parametrized on the 401(k)-family amounts
+            # so Step 0/2/3 below (2026-09-07 redesign, NEXT.md "contribution hierarchy redesign")
+            # can re-run it at different candidate contribution levels without duplicating the call.
+            return compute_taxes(
+                tax_year=bracket_year,
+                filing_status=filing_status,
+                age_at_year_end=age_at_year_end,
+                w2_gross=gross_w2,
+                pretax_401k=pretax_401k,
+                roth_401k=roth_401k,
+                pretax_health_dental=0.0,
+                se_net_profit=gross_se,
+                se_solo_employee_deferral=se_employee,
+                se_solo_employer_contribution=se_employer,
+                taxable_retirement_withdrawal=0.0,
+                ltcg=0.0,
+                qualified_dividends=0.0,
+                ordinary_dividends=0.0,
+                interest_income=0.0,
+                ss_benefit_gross=0.0,
+                bracket_table=bracket_table,
+                deferral_priority=deferral_priority,
+                ordinary_break_income=gross_break,
+            )
 
-        tax_result = _tax_for(w2_401k_used, roth_401k_used, se_employee_used, se_employer_used)
+        # ==== Contribution hierarchy v3 (2026-09-07, NEXT.md "contribution hierarchy v3: revert
+        # cash order to 401(k) first" — Part A only; Part B's "rate-optimized" mode and the
+        # separate mode-simplification note above are NOT built here) — reverts the cash order back
+        # to 401(k) -> Roth/Traditional IRA -> Taxable, while KEEPING the affordability guarantee
+        # from the intermediate "Roth first" redesign (this is the genuinely new part relative to
+        # the ORIGINAL, pre-2026-09-07 design — see this function's own docstring for the full
+        # mechanism). Summary: Step 0 decides, from earned income ALONE with the 401(k) family
+        # forced to $0, whether this year can even afford its expenses at all — the ONLY dissaving
+        # trigger. If it can, the 401(k) family is sized FIRST (Step 1), up to its own full legal
+        # target, capped only so it can never itself push earned income below expenses; Roth IRA
+        # then Traditional IRA fund from whatever's left (Step 2); Taxable absorbs the remainder
+        # (Step 3). If it can't, everything gets $0 and the existing dissaving mechanism (below)
+        # takes over unchanged. ----
+
+        # ---- Step 0: baseline affordability, entirely independent of any contribution election.
+        # UNCHANGED from the "Roth first" design — this check doesn't care about ordering.
+        # `_earned_only_tax_for(0, 0, 0, 0)` isolates EXACTLY what earned income alone, with zero
+        # 401(k) contribution of any kind, would leave after tax — the "can we even afford expenses
+        # with no retirement election at all" question the hierarchy asks FIRST. ----
+        tax_with_zero_401k = _earned_only_tax_for(0.0, 0.0, 0.0, 0.0)
+        net_income_no_401k = gross_earned_income - tax_with_zero_401k["total_tax"]
+
+        combined_ira_limit = (
+            max_ira_contribution_limit(bracket_year, age_at_year_end, bracket_table)
+            if gross_w2 + gross_se > 0
+            else 0.0
+        )
+
+        if net_income_no_401k < gross_expense:
+            # ---- Genuine earned-income shortfall — the ONLY condition under which dissaving
+            # triggers now (see this function's own docstring). Everything gets $0: there is no
+            # surplus to fund any of it, and (same monotonicity argument as before) putting any
+            # money into any of it here would only make the shortfall bigger. `tax_result` still
+            # needs computing (real, investment-income-inclusive, zero 401(k)) — the row's actual
+            # tax figures are never skipped just because contributions are all $0 this year. ----
+            w2_401k_used = 0.0
+            roth_401k_used = 0.0
+            se_employee_used = 0.0
+            se_employer_used = 0.0
+            roth_ira_used = 0.0
+            traditional_ira_used = 0.0
+            taxable_used = 0.0
+            discretionary_spending = 0.0
+            contribution_401k_iteration_count = None
+            tax_result = _tax_for(0.0, 0.0, 0.0, 0.0)
+        else:
+            # ---- Step 1 (401(k) FIRST, Part A): the 401(k) family funded from the earned-income
+            # surplus (`net_income_no_401k - gross_expense`), up to its own full legal target, via
+            # fixed-point iteration — the LARGEST employee-side (W-2 + SE-employee) combined
+            # contribution such that funding it (apportioned in
+            # resolve_401k_target's own "custom"-mode priority order: W-2 capacity first, overflow
+            # into SE-employee capacity — reused directly, not re-implemented) leaves
+            # net_income_earned_only >= gross_expense — deliberately NOT "+ roth_ira_used +
+            # traditional_ira_used" this time: Roth/Traditional haven't been decided yet, since
+            # 401(k) now goes first and gets first claim on the surplus. This ALWAYS has a
+            # solution: Step 0 already guarantees net_income_no_401k >= gross_expense, i.e. the
+            # $0-contribution case always satisfies the constraint, so the iteration is bounded and
+            # can never fail to converge to something between $0 and the full legal target — the
+            # "401(k) can never itself force dissaving" guarantee from the intermediate work,
+            # reattached to this new-old order. Converges for the same reason the withdrawal-sizing
+            # loop already does: a dollar of pretax 401(k) contribution raises the shortfall by LESS
+            # than a dollar (the marginal tax it saves) — a Roth 401(k) dollar raises it by EXACTLY
+            # a dollar (no tax benefit), the boundary case, still not more than a dollar — so this
+            # is always a genuine contraction (or, for Roth, an exact one-step solve). ----
+            target_401k = resolve_401k_target(
+                mode=contrib_config.get("contribution_401k_mode", "custom"),
+                custom_amount=contrib_config.get("contribution_401k_custom_amount", 0.0),
+                custom_type=contrib_config.get("contribution_401k_custom_type", "pretax"),
+                also_maximize_se_employer=contrib_config.get("maximize_se_employer_401k", False),
+                tax_year=bracket_year,
+                age_at_year_end=age_at_year_end,
+                gross_w2=gross_w2,
+                se_earnings=se_earnings,
+                bracket_table=bracket_table,
+            )
+            # `target_401k["over_cap_warning"]` (2026-08-30, user request: removed from
+            # contribution_warnings/the UI banner/Notes column) stays confirmed auto-corrected —
+            # every target below is already clamped to the legal §402(g) maximum regardless of
+            # whether this warning fires, so surfacing it adds no information the math doesn't
+            # already guarantee.
+            mode_401k = contrib_config.get("contribution_401k_mode", "custom")
+            employee_type_401k = (
+                "roth" if mode_401k == "max_roth"
+                else "pretax" if mode_401k == "max_pretax"
+                else contrib_config.get("contribution_401k_custom_type", "pretax")
+            )
+            employee_full_target_401k = (
+                target_401k["w2_pretax_target"] + target_401k["w2_roth_target"]
+                + target_401k["se_employee_pretax_target"] + target_401k["se_employee_roth_target"]
+            )
+            employer_full_target_401k = target_401k["se_employer_target"]
+            threshold_401k = gross_expense
+
+            def _simulate_401k_employee(candidate_total):
+                apportion = resolve_401k_target(
+                    mode="custom",
+                    custom_amount=candidate_total,
+                    custom_type=employee_type_401k,
+                    also_maximize_se_employer=False,
+                    tax_year=bracket_year,
+                    age_at_year_end=age_at_year_end,
+                    gross_w2=gross_w2,
+                    se_earnings=se_earnings,
+                    bracket_table=bracket_table,
+                )
+                se_employee_c = apportion["se_employee_pretax_target"] + apportion["se_employee_roth_target"]
+                tax = _earned_only_tax_for(
+                    apportion["w2_pretax_target"], apportion["w2_roth_target"], se_employee_c, 0.0
+                )
+                net = gross_earned_income - tax["total_tax"] - candidate_total
+                return net, apportion
+
+            guess = employee_full_target_401k
+            apportion_final = None
+            converged = False
+            for iteration in range(1, 21):
+                net, apportion_final = _simulate_401k_employee(guess)
+                gap = threshold_401k - net
+                new_guess = min(employee_full_target_401k, max(0.0, guess - gap))
+                if abs(new_guess - guess) < 1.0:
+                    contribution_401k_iteration_count = iteration
+                    converged = True
+                    break
+                guess = new_guess
+            if not converged:
+                contribution_401k_iteration_count = 20
+                contribution_warnings.append(
+                    f"401(k)-family contribution sizing did not converge within 20 iterations in "
+                    f"{year} (last guess ${guess:,.0f})."
+                )
+            employee_c_final = guess
+            w2_401k_used = apportion_final["w2_pretax_target"]
+            roth_401k_used = apportion_final["w2_roth_target"]
+            se_employee_used = apportion_final["se_employee_pretax_target"] + apportion_final["se_employee_roth_target"]
+
+            # SE-employer: lowest priority within this same step — reuses the identical fixed-point
+            # technique, but only gets a shot at whatever's left once the employee side is FULLY
+            # funded at its own legal target (not merely converged below it); if the employee side
+            # came in under target, there is by definition nothing left for it.
+            se_employer_used = 0.0
+            if employer_full_target_401k > 0 and employee_c_final >= employee_full_target_401k - 1.0:
+                def _simulate_401k_employer(candidate_employer):
+                    tax = _earned_only_tax_for(w2_401k_used, roth_401k_used, se_employee_used, candidate_employer)
+                    return gross_earned_income - tax["total_tax"] - employee_c_final - candidate_employer
+
+                guess_e = employer_full_target_401k
+                converged_e = False
+                for iteration in range(1, 21):
+                    net_e = _simulate_401k_employer(guess_e)
+                    gap_e = threshold_401k - net_e
+                    new_guess_e = min(employer_full_target_401k, max(0.0, guess_e - gap_e))
+                    if abs(new_guess_e - guess_e) < 1.0:
+                        converged_e = True
+                        break
+                    guess_e = new_guess_e
+                if not converged_e:
+                    contribution_warnings.append(
+                        f"SE-employer 401(k) contribution sizing did not converge within 20 "
+                        f"iterations in {year} (last guess ${guess_e:,.0f})."
+                    )
+                se_employer_used = guess_e
+
+            # ---- Step 2 (Roth IRA, then Traditional IRA, Part A): funded from whatever's left
+            # AFTER 401(k) — `remaining_after_401k` uses the REAL, now-already-known 401(k) amount
+            # (not a hypothetical), computed via the same earned-only isolation Step 0 uses.
+            # `saving_fraction` gates how much of THIS remainder is even eligible for voluntary
+            # (Roth/Traditional/Taxable) saving — 401(k) itself stays outside that gate, unaffected
+            # by saving_fraction (a payroll deduction, unchanged precedent). `discretionary_spending`
+            # is simpler and bug-3-proof BY CONSTRUCTION now (not a late, special-cased computation):
+            # since the 401(k) amount is already netted out of `remaining_after_401k` before this is
+            # computed, there is no way to double-count a real 401(k) contribution against it the
+            # way the "Roth first" design's first draft did. ----
+            final_earned_only_tax = _earned_only_tax_for(w2_401k_used, roth_401k_used, se_employee_used, se_employer_used)
+            contributed_401k_family_step1 = w2_401k_used + roth_401k_used + se_employee_used + se_employer_used
+            net_income_earned_only_after_401k = (
+                gross_earned_income - final_earned_only_tax["total_tax"] - contributed_401k_family_step1
+            )
+            remaining_after_401k = net_income_earned_only_after_401k - gross_expense
+            available_for_ira_and_taxable = remaining_after_401k * saving_fraction
+            # Clamped at `$0` (matching this field's own "never negative by construction"
+            # guarantee): Step 1's fixed-point solve converges within a $1 tolerance, not exactly,
+            # so a fully-affordable year can land a cent or two on either side of the true
+            # break-even point — a real, harmless, sub-dollar residual of the SAME kind
+            # `funding_gap`'s own docstring already documents for withdrawal sizing, not a bug.
+            discretionary_spending = max(0.0, remaining_after_401k - available_for_ira_and_taxable)
+
+            # `tax_result` — the row's real, investment-income-inclusive tax figures, computed HERE
+            # (not after this whole if/else, as the "Roth first" design needed) because Roth's MAGI
+            # needs it NOW: 401(k) is already fully known at this point, so `tax_result["federal_agi"]`
+            # is the genuinely correct MAGI input directly — no more dedicated "$0 401(k)
+            # hypothetical" tax call (a free structural fix: Roth resolving strictly AFTER 401(k) is
+            # exactly the order that makes MAGI unambiguous). Reused as-is for the row below; never
+            # recomputed, since neither Roth nor Traditional IRA contributions feed back into
+            # compute_taxes at all in this model (Roth: no tax effect ever; Traditional: no
+            # deduction modeled — see resolve_traditional_ira_target's own docstring) — so this
+            # figure is already final regardless of what Step 2 below produces.
+            tax_result = _tax_for(w2_401k_used, roth_401k_used, se_employee_used, se_employer_used)
+            magi = roth_ira_magi(tax_result["federal_agi"])
+            roth_ira_target = resolve_roth_ira_target(
+                mode=contrib_config.get("roth_ira_mode", "custom"),
+                custom_amount=contrib_config.get("roth_ira_custom_amount", 0.0),
+                tax_year=bracket_year,
+                filing_status=filing_status,
+                age_at_year_end=age_at_year_end,
+                magi=magi,
+                combined_ira_limit=combined_ira_limit,
+                bracket_table=bracket_table,
+            )
+            traditional_ira_target = resolve_traditional_ira_target(
+                mode=contrib_config.get("traditional_ira_mode", "custom"),
+                custom_amount=contrib_config.get("traditional_ira_custom_amount", 0.0),
+                combined_ira_limit=combined_ira_limit,
+                roth_ira_used=roth_ira_target,
+            )
+            # ---- Step 3: Taxable absorbs whatever's left of `available_for_ira_and_taxable` after
+            # Roth/Traditional IRA — same guaranteed-leftover role as always. ----
+            step2_funded = fund_from_available_cash(roth_ira_target, traditional_ira_target, available_for_ira_and_taxable)
+            roth_ira_used = step2_funded["roth_ira_used"]
+            traditional_ira_used = step2_funded["traditional_ira_used"]
+            taxable_used = step2_funded["taxable_used"]
+
+        contribution_destinations = {"taxable": taxable_used, "uninvested_surplus": 0.0}
+
         employer_match = employer_401k_match(
             gross_w2, w2_401k_used + roth_401k_used, employer_match_rate, employer_match_cap_pct
         )
+        contributed_401k_family = w2_401k_used + roth_401k_used + se_employee_used + se_employer_used
 
         # ---- tax_attributable_to_investment_income (2026-09-06 fix — see NEXT.md for the full bug
         # report): the SAME "second compute_taxes call with one source zeroed" isolation technique
@@ -841,97 +1135,6 @@ def project_multi_year(
         )
         tax_attributable_to_investment_income = tax_result["total_tax"] - investment_income_zeroed_tax_result["total_tax"]
 
-        # ---- available_cash: earned-income-only, post-tax, post-expense, post-401(k)-deduction
-        # figure Roth IRA/Traditional IRA/Taxable compete for in Stage 2 (CONTRIBUTION_TOGGLE_
-        # REDESIGN.md §1: "tax is computed WITH that real deduction applied, then Roth/Traditional/
-        # Taxable compete for what's actually left" — a deliberate improvement over the prior
-        # waterfall's own $0-contribution baseline, which never credited back the real tax savings
-        # a 401(k) deduction produces). Deliberately EXCLUDES investment income already auto-
-        # reinvested by `roll_forward_portfolio` (step 1, above) — that is the portfolio's own
-        # dedicated reinvestment mechanism; folding it in here would invest the same after-tax
-        # dollar twice (WATERFALL_STREAMLINE_REDESIGN.md §2.3's double-counting trap, reused
-        # verbatim: this figure is built from `gross_earned_income`, never `gross_income`). ----
-        gross_earned_income = gross_w2 + gross_se + gross_break
-        earned_only_tax = compute_taxes(
-            tax_year=bracket_year,
-            filing_status=filing_status,
-            age_at_year_end=age_at_year_end,
-            w2_gross=gross_w2,
-            pretax_401k=w2_401k_used,
-            roth_401k=roth_401k_used,
-            pretax_health_dental=0.0,
-            se_net_profit=gross_se,
-            se_solo_employee_deferral=se_employee_used,
-            se_solo_employer_contribution=se_employer_used,
-            taxable_retirement_withdrawal=0.0,
-            ltcg=0.0,
-            qualified_dividends=0.0,
-            ordinary_dividends=0.0,
-            interest_income=0.0,
-            # Module F (2026-08-31): deliberately STAYS $0.0 here, not the real ss_benefit_gross --
-            # this call exists specifically to isolate EARNED income (gross_earned_income above
-            # excludes it too, for the same reason), and Social Security is neither earned income
-            # nor the investment income this isolation already excludes. Including it here would
-            # feed available_cash a tax bill reflecting SS-driven bracket effects without the
-            # matching income on the other side of net_income_earned_only, understating it.
-            ss_benefit_gross=0.0,
-            bracket_table=bracket_table,
-            deferral_priority=deferral_priority,
-            ordinary_break_income=gross_break,
-        )
-        contributed_401k_family = w2_401k_used + roth_401k_used + se_employee_used + se_employer_used
-        net_income_earned_only = gross_earned_income - earned_only_tax["total_tax"] - contributed_401k_family
-        profit_earned_only = net_income_earned_only - gross_expense
-        available_cash = max(0.0, profit_earned_only) * saving_fraction
-        # `discretionary_spending` (2026-09-06, NEXT.md item B1 — see this function's own docstring
-        # for the full "replaces the coasting freeze" reasoning): the earned-income surplus that
-        # ISN'T becoming a new Stage-2 contribution this year — algebraically `max(0.0,
-        # profit_earned_only) * (1 - saving_fraction)`, but written this way (reusing
-        # `available_cash` directly) so there is exactly one place computing "how much of the
-        # earned surplus stays invested," not two formulas that could drift apart.
-        discretionary_spending = max(0.0, profit_earned_only) - available_cash
-
-        # ---- Stage 2: Roth IRA, then Traditional IRA, then Taxable — funded from available_cash
-        # (CONTRIBUTION_TOGGLE_REDESIGN.md §3/§5). IRC §219(f)(1): $0 earned income means $0
-        # combined IRA limit, full stop, regardless of MAGI/phase-out math — structurally built into
-        # `resolve_roth_ira_target` via `combined_ira_limit` below, not a separate warning check. ----
-        combined_ira_limit = (
-            max_ira_contribution_limit(bracket_year, age_at_year_end, bracket_table)
-            if gross_w2 + gross_se > 0
-            else 0.0
-        )
-        magi = roth_ira_magi(tax_result["federal_agi"])
-        roth_ira_target = resolve_roth_ira_target(
-            mode=contrib_config.get("roth_ira_mode", "custom"),
-            custom_amount=contrib_config.get("roth_ira_custom_amount", 0.0),
-            tax_year=bracket_year,
-            filing_status=filing_status,
-            age_at_year_end=age_at_year_end,
-            magi=magi,
-            combined_ira_limit=combined_ira_limit,
-            bracket_table=bracket_table,
-        )
-        traditional_ira_target = resolve_traditional_ira_target(
-            mode=contrib_config.get("traditional_ira_mode", "custom"),
-            custom_amount=contrib_config.get("traditional_ira_custom_amount", 0.0),
-            combined_ira_limit=combined_ira_limit,
-            roth_ira_used=roth_ira_target,
-        )
-        # (2026-08-30, user request: the old "Roth/Traditional IRA contribution exceeds this
-        # year's real legal limit... Reduced to the legal maximum" warnings that used to be built
-        # here are removed — confirmed auto-corrected: roth_ira_target/traditional_ira_target above
-        # already reflect resolve_roth_ira_target's/resolve_traditional_ira_target's own clamping
-        # to the legal max, MAGI phase-out, and §219(f)(1) earned-income gate, regardless of
-        # whether a message fires, so the warning added no information the math didn't already
-        # guarantee. A genuine cash shortfall in Stage 2 below is a separate, normal, expected
-        # outcome, not something this removed check ever flagged anyway.)
-
-        funded = fund_from_available_cash(roth_ira_target, traditional_ira_target, available_cash)
-        roth_ira_used = funded["roth_ira_used"]
-        traditional_ira_used = funded["traditional_ira_used"]
-        taxable_used = funded["taxable_used"]
-        contribution_destinations = {"taxable": taxable_used, "uninvested_surplus": 0.0}
-
         row["tax_available"] = True
         row["bracket_year_used"] = bracket_year
         # net_income/profit correctly subtract the 401(k)-family dollars actually deferred this
@@ -943,6 +1146,10 @@ def project_multi_year(
         row["discretionary_spending"] = discretionary_spending
         row["notes"] = notes
         row["contribution_warnings"] = contribution_warnings
+        # 2026-09-07 — the fixed-point solve's own iteration count (Step 2 above), mirroring
+        # `withdrawal_iteration_count`'s existing convention exactly: `None` in a genuine earned-
+        # income-shortfall year (no 401(k) sizing ran at all that year), 1-20 otherwise.
+        row["contribution_401k_iteration_count"] = contribution_401k_iteration_count
         row["w2_401k_contribution_used"] = w2_401k_used
         row["roth_401k_contribution_used"] = roth_401k_used
         row["se_401k_employee_contribution_used"] = se_employee_used
@@ -1011,19 +1218,27 @@ def project_multi_year(
         # (`roll_result["new_lots"]`) -- the identical dollar counted as both "spent on expenses"
         # (by avoiding a sale) and "bought new shares" (by reinvesting) in the same year. Fixed the
         # same way the withdrawal phase already nets dividends against its own target correctly
-        # (`dividends_applied`, below): net the shortfall against EARNED income alone FIRST
-        # (`profit_earned_only`, already computed above, investment-income-EXCLUDED by
-        # construction), use dividend cash only for whatever earned income alone doesn't cover, and
-        # scale down that SAME dividend's own reinvestment lots by exactly that much (see the
-        # "Taxable-account reinvestment" comment near `roll_result["new_lots"]`, below -- composed
-        # AFTER that section's own investment-income-tax deduction, not instead of it). The OUTER
-        # gate (this year, pre-retirement, not withdrawing) is UNCHANGED from before this fix; only
-        # the inner "was there really a shortfall, and how much of it did dividends already cover"
-        # logic is new.
+        # (`dividends_applied`, below): net the shortfall against EARNED income alone FIRST, use
+        # dividend cash only for whatever earned income alone doesn't cover, and scale down that
+        # SAME dividend's own reinvestment lots by exactly that much (see the "Taxable-account
+        # reinvestment" comment near `roll_result["new_lots"]`, below -- composed AFTER that
+        # section's own investment-income-tax deduction, not instead of it). The OUTER gate (this
+        # year, pre-retirement, not withdrawing) is UNCHANGED from before this fix; only the inner
+        # "was there really a shortfall, and how much of it did dividends already cover" logic is
+        # new.
+        #
+        # 2026-09-07 (contribution hierarchy redesign, NEXT.md): the shortfall itself now comes
+        # straight from Step 0's baseline (`net_income_no_401k`, computed with the 401(k) family
+        # forced to $0) rather than `profit_earned_only` (the OLD design's post-401(k) figure) --
+        # per the redesign's own explicit instruction, this is now the ONLY condition that can
+        # trigger dissaving at all. In a normal (surplus) year this is exactly `$0` by construction
+        # (Step 2's iteration never spends past what `net_income_no_401k` can afford), so this
+        # reduces to a no-op there -- "no dissaving check happens at all past" the Step 0 decision,
+        # same behavior the redesign note itself describes.
         dissaving_sale = None
         dividend_used_for_expenses = 0.0
         if portfolio_active and year < retirement_date.year and withdrawing_fraction <= 0:
-            earned_shortfall = max(0.0, -profit_earned_only)
+            earned_shortfall = max(0.0, gross_expense - net_income_no_401k)
             dividend_used_for_expenses = min(gross_investment_income, earned_shortfall)
             remaining_shortfall = max(0.0, earned_shortfall - dividend_used_for_expenses)
 
