@@ -602,9 +602,12 @@ class TestProjectMultiYearContributionModes:
         assert with_match[0]["total_tax"] == pytest.approx(no_match[0]["total_tax"])
         assert with_match[0]["profit"] == pytest.approx(no_match[0]["profit"])
 
-    def test_available_cash_never_negative_when_earned_profit_is_negative(self, bracket_table):
-        # Large expenses relative to income -> earned-only profit < 0 -> available_cash must clamp
-        # to 0, not go negative and raise inside fund_from_available_cash.
+    def test_401k_and_roth_both_zero_when_earned_income_alone_cant_cover_expenses(self, bracket_table):
+        # 2026-09-07 redesign (NEXT.md "contribution hierarchy redesign"): large expenses relative
+        # to income -> net_income_no_401k < gross_expense -> a genuine earned-income shortfall, the
+        # ONLY condition under which dissaving triggers now. Roth IRA and the ENTIRE 401(k) family
+        # get $0 that year (superseding the pre-2026-09-07 "401(k) is cash-blind, funds in full
+        # regardless" behavior this test used to assert) -- no exception, no spurious warning.
         rows = project_multi_year(
             _income_inputs(current_year_already_earned_w2=10000.0),
             _expense_inputs(current_year_already_incurred_expense=100000.0),
@@ -621,10 +624,66 @@ class TestProjectMultiYearContributionModes:
         assert not row.get("contribution_warnings")  # no exception, no spurious warning
         assert row["roth_ira_contribution_used"] == 0.0  # nothing left after expenses
         assert row["profit"] < 0
-        # 401(k) is a payroll deduction, independent of available_cash -- still funds in full even
-        # though there's $0 left for Roth IRA/Taxable (CONTRIBUTION_TOGGLE_REDESIGN.md §1's own
-        # explicit "never gated on available cash" instruction).
+        assert row["w2_401k_contribution_used"] == 0.0
+        assert row["se_401k_employee_contribution_used"] == 0.0
+        assert row["se_401k_employer_contribution_used"] == 0.0
+        assert row["traditional_ira_contribution_used"] == 0.0
+        assert row["contribution_401k_iteration_count"] is None
+
+    def test_401k_gets_priority_over_roth_ira_when_surplus_cant_afford_both(self, bracket_table):
+        # 2026-09-07, NEXT.md "contribution hierarchy v3: revert cash order to 401(k) first" -- the
+        # core regression that distinguishes this order from the superseded "Roth first" design
+        # (which would have funded Roth IRA to its own $7,500 limit here and left less for 401(k)).
+        # $60k W-2, $30k expenses -- real numbers from the user's own test_method.json scenario
+        # (2027): a genuine partial-affordability year where 401(k) claims the surplus FIRST, up to
+        # a fixed-point-converged amount well under its full legal target, leaving $0 for Roth IRA.
+        rows = project_multi_year(
+            _income_inputs(current_year_already_earned_w2=60000.0),
+            _expense_inputs(current_year_already_incurred_expense=30000.0),
+            current_date=date(2026, 1, 1),
+            horizon_date=date(2026, 12, 31),
+            retirement_date=date(2026, 12, 31),
+            birth_date=date(1990, 1, 1),
+            filing_status="single",
+            bracket_table=bracket_table,
+            phase_dates=PHASE_DATES,
+            contribution_config_by_year={2026: _max_config()},
+        )
+        row = rows[0]
         assert row["w2_401k_contribution_used"] > 0
+        # 401(k) didn't reach its own full legal target (there wasn't enough surplus) -- a genuine
+        # partial fixed-point solve, not the trivial "fits entirely" case.
+        assert row["w2_401k_contribution_used"] < row["max_w2_employee_deferral"]
+        assert row["contribution_401k_iteration_count"] is not None
+        assert row["contribution_401k_iteration_count"] > 1
+        # 401(k) claimed the ENTIRE surplus first -- nothing left for Roth IRA this year.
+        assert row["roth_ira_contribution_used"] == pytest.approx(0.0)
+        assert row["profit"] == pytest.approx(0.0, abs=1.0)  # no dissaving, no leftover either
+
+    def test_roth_magi_reflects_the_real_401k_deduction_not_a_hypothetical(self, bracket_table):
+        # 2026-09-07, NEXT.md v3 -- MAGI for the Roth phase-out now uses the row's own REAL
+        # tax_result (401(k) already fully known, since it resolves FIRST) rather than a dedicated
+        # "$0 401(k) hypothetical" tax call the superseded "Roth first" design needed. $175,000 W-2
+        # (2026 single Roth phase-out band: $153,000-$168,000) -- WITHOUT any 401(k) deduction, AGI
+        # ($175,000) sits ABOVE the band ($0 Roth room); a full pretax 401(k) election
+        # ($24,500 for a 36-year-old in 2026) drops real AGI to $150,500, BELOW the band's lower
+        # bound -- full, uncapped Roth room. Confirms the model actually sees the post-deduction
+        # AGI, not the pre-deduction one.
+        rows = project_multi_year(
+            _income_inputs(current_year_already_earned_w2=175000.0),
+            _expense_inputs(),
+            current_date=date(2026, 1, 1),
+            horizon_date=date(2026, 12, 31),
+            retirement_date=date(2026, 12, 31),
+            birth_date=date(1990, 1, 1),
+            filing_status="single",
+            bracket_table=bracket_table,
+            contribution_config_by_year={2026: _max_config()},
+        )
+        row = rows[0]
+        assert row["w2_401k_contribution_used"] == pytest.approx(24500.0)  # fully affordable, fully maxed
+        assert row["federal_agi"] == pytest.approx(150500.0)  # below the $153,000 phase-out floor
+        assert row["roth_ira_contribution_used"] == pytest.approx(7500.0)  # full 2026 limit, uncapped
 
     def test_custom_amount_in_one_family_does_not_block_max_mode_in_the_other(self, bracket_table):
         # A small custom 401(k) entry alongside a real income -- Roth IRA (a separate destination,
@@ -1141,6 +1200,27 @@ class TestProjectMultiYearDiscretionarySpending:
         row_2031 = next(r for r in rows if r["year"] == 2031)
         assert row_2031["contribution_destinations"] is not None
         assert row_2031["contribution_destinations"]["taxable"] == pytest.approx(0.0)
+
+    def test_discretionary_spending_excludes_a_real_401k_contribution_during_coasting(self, bracket_table):
+        # 2026-09-07 regression -- a real bug found AFTER the redesign's own tests all passed (every
+        # test above uses a $0/$0 401(k)/IRA config, which happens to mask it entirely): 401(k) is
+        # deliberately UNAFFECTED by saving_fraction (a payroll deduction, unchanged precedent -- see
+        # modules.contributions's own module docstring), so a REAL 401(k) election keeps contributing
+        # even during full coasting (2031, saving_fraction == 0). discretionary_spending must exclude
+        # whatever that 401(k) contribution actually cost -- NOT treat the entire pre-401(k) surplus
+        # as spent, which would double-count the same dollars as both "financed the 401(k)" and
+        # "discretionary spending."
+        rows = _coasting_test_rows(bracket_table, contribution_config_by_year={y: _max_config() for y in range(2026, 2037)})
+        row_2031 = next(r for r in rows if r["year"] == 2031)
+        assert row_2031["w2_401k_contribution_used"] > 0  # 401(k) still funds during coasting
+        assert row_2031["roth_ira_contribution_used"] == pytest.approx(0.0)  # Roth IS gated by saving_fraction
+        assert row_2031["contribution_destinations"]["taxable"] == pytest.approx(0.0)
+        # The genuine leftover after the real 401(k) contribution -- must equal `profit` exactly
+        # (Roth/Traditional/Taxable are all $0 this year, so every remaining real dollar IS
+        # discretionary). A double-counting formula (the pre-401(k) baseline, ignoring the real
+        # 401(k) contribution) would instead report `profit + <the 401(k) contribution's after-tax
+        # cost>` here -- strictly more than `profit` itself, which this pins down as wrong.
+        assert row_2031["discretionary_spending"] == pytest.approx(row_2031["profit"])
 
 
 class TestProjectMultiYearWithdrawalDateOrdering:
