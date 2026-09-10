@@ -1,6 +1,267 @@
 # NEXT.md — Current state and next step
 
-Last updated: 2026-09-07 (42nd pass)
+Last updated: 2026-09-10 (43rd pass)
+
+## Latest session (2026-09-10): built the Results-tab chart/metric update queued directly below — all four sub-changes, verified live
+
+User's request: "update the charts based on next.md." Built exactly the four sub-changes in the
+"Results tab" note directly below (now labeled "Original queue (built above)") — `ui/projection_tab.py`
+only, no `modules/` changes, matching the note's own scope.
+
+**What changed**:
+1. Added "Average tax rate during retirement" `st.metric` to BOTH columns of the `stat_col1`/
+   `stat_col2` section — `stat_col1` via a fresh `average_retirement_tax_rate(rows)` call (newly
+   imported); `stat_col2` reuses the ALREADY-computed `adjusted_wealth_result["average_tax_rate"]`
+   local variable rather than a second, redundant call on the same rows (exactly as the note itself
+   flagged as the preferred style).
+2. `_retirement_income_chart` — removed `discretionary_income` from the `paired` tuple and the old
+   two-line loop entirely (kept only "Gross withdrawal").
+3. Added an explicit "Total net income" dashed reference line over the SS/Other stack, styled like
+   `_pre_retirement_overview_chart`'s own "Total gross income" line — replaces the old implicit
+   "label the stack's own top edge" call rather than sitting alongside it. Renamed (not added)
+   `_PLOTLY_COLORS["discretionary"]` → `_PLOTLY_COLORS["total_net_income"]` for this line's color —
+   same already-CVD-validated violet, just repurposed.
+4. Added an opt-in secondary percent axis to `_style_chart` (`secondary_y_title`/
+   `secondary_y_tickformat` params, default `None` — every other chart on the tab is unaffected) and
+   a new per-year "Effective tax rate" line (`retirement_taxes_paid / total_withdrawal_income`, a
+   `None` gap in a year with no withdrawal income — same convention `average_retirement_tax_rate`
+   uses for its own average) plotted on it.
+
+**One deviation from the note's own literal snippet, flagged rather than followed to the letter**:
+the note's own `tax_rate` list comprehension used `p[6]`/`p[1]` — those indices assumed a 7-element
+tuple that doesn't match what the same note's own "remove discretionary_income from the tuple"
+instruction produces. Built the tuple as `(year, total_withdrawal_income, net_retirement_income,
+ss_after_tax_income, other_after_tax_income, retirement_taxes_paid)` (6 elements) and indexed
+correctly against THAT shape (`p[5]`/`p[1]`) rather than reproducing the note's own off-by-one.
+
+**Verification**: 601 tests passing (this tab's chart builders have no existing unit tests to
+update, confirmed by the note itself — `average_retirement_tax_rate` itself is unchanged and
+already covered). pyflakes clean. Verified live via AppTest against the user's own real
+`saved_states/real_portfolio.json` scenario: 0 exceptions, only the same pre-existing "not fully
+insured" informational banner unrelated to this change; captured the actual Plotly figures from
+both chart call sites and confirmed the trace list is exactly `['Tax', 'Social Security (after
+tax)', 'Other (after tax)', 'Gross withdrawal', 'Total net income', 'Effective tax rate']` (no
+"Discretionary income"), "Effective tax rate" sits on a real `yaxis2` (percent-formatted, right
+side, no gridlines), and both new "Average tax rate during retirement" metrics render real values
+(24.5% / 13.8% in this scenario).
+
+**Branching note**: this was built on a fresh branch off `main` (`results-tab-tax-rate-chart`), NOT
+on top of the still-open, unmerged `contribution-hierarchy-401k-first` PR — the two are unrelated
+(this note's own functions/fields all pre-date that work) and keeping them as separate PRs avoids
+tangling an unrelated feature into either review.
+
+
+## Original queue (built above, 2026-09-10) — Results tab: average retirement tax rate as a metric and as a dual-axis chart line; drop "Discretionary income" from the two retirement-income charts in favor of an explicit "Total net income" line
+
+**User's own words**: "add the average tax rate during retirement to the two column approach in the
+results tab in the projection tab. ... remove discretionary income from the total retirement income
+(as planned) and total retirement income (no income and expenses). ... instead add a total net
+income line to those charts. Then also ... add the tax rate as a line on the charts too on a
+separate vertical axis." Four sub-changes, all in `ui/projection_tab.py`; no `modules/` changes
+needed at all — reuses an already-existing, already-tested function unchanged
+(`modules.projection.average_retirement_tax_rate`) and already-existing row fields. Scope: the
+"remove Discretionary income" part is about the two CHART titles named — "Total retirement income
+(as planned)" and "Total retirement income (no income or expenses)" — not the separate "Retirement
+income" DATA TABLE further down the page, which has its own "Discretionary income" column and its
+own explanatory caption paragraph; that table is UNTOUCHED by this note (flagging this scope
+assumption explicitly, in case the user wants it dropped there too).
+
+### 1. "Average tax rate during retirement" — add to both columns of the `stat_col1`/`stat_col2` section
+
+This is literally "the two column approach" referenced: the `st.columns(2)` block (~line 1631,
+headed "If income & spending continue as planned" / "If you stopped earning & spending today")
+that already places `Wealth at retirement`/`Avg. annual net retirement income`/`SS contribution to
+net income`/`Net income without SS` side by side for the real scenario (`rows`) and the no-income/
+no-expense baseline (`baseline_rows`).
+
+**Zero new tax logic** — `modules.projection.average_retirement_tax_rate(rows)` already computes
+exactly this (`retirement_taxes_paid / total_withdrawal_income`, plain-averaged across every
+withdrawal-phase row with positive withdrawal income) and is already imported and used elsewhere on
+this same page (inside `adjusted_wealth_via_retirement_tax_rate`, today only ever called on
+`baseline_rows`). Add it to the `from modules.projection import (...)` block at the top of the file,
+then add one `st.metric` call in EACH column, calling it on that column's own row set:
+
+```python
+# stat_col1 (the real "as planned" scenario) — add after the existing 4 metrics:
+avg_tax_rate_retirement = average_retirement_tax_rate(rows)
+st.metric(
+    "Average tax rate during retirement",
+    f"{avg_tax_rate_retirement:.1%}" if avg_tax_rate_retirement is not None else "—",
+    help="Plain average, across every withdrawal-phase year, of that year's own effective tax "
+    "rate (Taxes paid / Gross withdrawal — see the Retirement income table below). Not a marginal "
+    "rate, and not the same figure used to discount 401(k) contributions in the Pre-retirement "
+    "wealth table above (that one is federal-marginal-rate-weighted; this one is the plain "
+    "effective-rate average already used by the Adjusted wealth metric above).",
+)
+
+# stat_col2 (the no-income/no-expense baseline) — add after its own existing 4 metrics:
+baseline_avg_tax_rate_retirement = average_retirement_tax_rate(baseline_rows)
+st.metric(
+    "Average tax rate during retirement",
+    f"{baseline_avg_tax_rate_retirement:.1%}" if baseline_avg_tax_rate_retirement is not None else "—",
+    help="Same figure, computed on the no-income/no-expense baseline above — this is the exact "
+    "rate already feeding the 'Adjusted wealth (today, net of future taxes)' metric's own "
+    "calculation further up the page.",
+)
+```
+
+The `stat_col2` figure is worth calling out as literally already computed today, just not
+displayed — `adjusted_wealth_result["average_tax_rate"]` (from `adjusted_wealth_via_retirement_tax_rate(baseline_rows, discount_rate)`, called earlier in `render()`) is this exact
+same number. Either reuse that existing local variable directly instead of a second function call,
+or call `average_retirement_tax_rate(baseline_rows)` fresh — both are the identical computation on
+the identical rows, so it's a style choice, not a correctness one; reusing the existing variable
+avoids a redundant pass over `baseline_rows` and keeps the two "average retirement tax rate"
+mentions on the page (this metric and the "Adjusted wealth" help text) visibly tied to one shared
+number rather than two separately-computed ones that must coincidentally agree.
+
+### 2 & 3. `_retirement_income_chart` — drop "Discretionary income", add an explicit "Total net income" reference line
+
+Both charts on the page are the SAME function, `_retirement_income_chart(rows, title=...)`, called
+once for `withdrawal_phase_rows` ("Total retirement income (as planned)") and once for
+`baseline_withdrawal_phase_rows` ("Total retirement income (no income or expenses)") — one change
+to the function fixes both call sites automatically.
+
+**Remove**: `discretionary_income` from the `paired` tuple's required fields and from the
+`discretionary` list, and remove the `(discretionary, "Discretionary income",
+_PLOTLY_COLORS["discretionary"])` entry from the `for values, name, color in ((gross, "Gross
+withdrawal", ...), (discretionary, "Discretionary income", ...))` loop — that loop keeps ONLY the
+`gross`/"Gross withdrawal" entry now.
+
+**Add**: a new explicit "Total net income" line, styled the same way this exact file already styles
+its one other "un-stacked total drawn over a stack" reference line — `_pre_retirement_overview_chart`'s
+own "Total gross income (incl. investment income)" trace (dashed, `mode="lines"`, its own color, no
+markers) — reusing that established convention rather than inventing new styling for this one.
+Placed right after the SS/Other stacked-area loop (where the old, now-removed
+`_dollar_end_label(fig, years[-1], net[-1], _PLOTLY_COLORS["net"])` call used to implicitly label
+the stack's own top edge — that call is now REPLACED by this trace's own end label, not kept
+alongside it, to avoid two overlapping labels at the same point):
+
+```python
+fig.add_trace(
+    go.Scatter(
+        x=years,
+        y=net,
+        mode="lines",
+        name="Total net income",
+        line=dict(width=2, color=_PLOTLY_COLORS["total_net_income"], dash="dash"),
+        hovertemplate="<b>$%{y:,.0f}</b><extra>Total net income</extra>",
+    )
+)
+if years:
+    _dollar_end_label(fig, years[-1], net[-1], _PLOTLY_COLORS["total_net_income"])
+```
+
+**Color**: rename the now-unused `_PLOTLY_COLORS["discretionary"]` key (`#9085e9`, violet) to
+`_PLOTLY_COLORS["total_net_income"]` and update its comment — the underlying reasoning
+("already-validated violet, PASSES against blue at CVD ΔE 13.0, distinct from the teal/yellow the
+stack already uses") is unchanged; only what it's now used FOR changes (a total-income reference
+line instead of a third line series). No new color needed — this is a straight repurposing of an
+already-reasoned, already-validated hue, not a fresh pick. Update the function's own docstring to
+drop the `discretionary_income`/2026-08-14-fix narrative it currently carries (that whole
+paragraph is about a bug in a line this change removes) and describe the new "Total net income"
+dashed overlay instead — same "flag what changed and why" convention this codebase's docstrings
+already use everywhere else, rather than silently deleting the history with no trace.
+
+### 4. Effective tax rate as a per-year line, on its own secondary (right-side, percent) axis
+
+Neither chart on this tab has a secondary y-axis today — `_style_chart` (the ONE shared styling
+function every chart on this tab already funnels through) only configures a single dollar axis.
+Add an opt-in secondary axis to `_style_chart` itself, off by default, so every other chart calling
+it is completely unaffected:
+
+```python
+def _style_chart(
+    fig: go.Figure,
+    title: str,
+    height: int,
+    y_max: float | None = None,
+    allow_negative: bool = False,
+    show_legend: bool = True,
+    secondary_y_title: str | None = None,       # NEW
+    secondary_y_tickformat: str = ".0%",         # NEW
+) -> None:
+    ...
+    if secondary_y_title is not None:
+        fig.update_layout(
+            yaxis2=dict(
+                title=secondary_y_title,
+                tickformat=secondary_y_tickformat,
+                overlaying="y",
+                side="right",
+                showgrid=False,          # avoid a second, unrelated gridline set fighting the
+                                          # existing dollar gridlines — standard dual-axis practice
+                automargin=True,         # same "let Plotly expand as needed" convention every
+                                          # other axis on this tab already uses, rather than
+                                          # hand-tuning `margin.r` for this one new case
+                linecolor=_PLOTLY_COLORS["axis"],
+                color=_PLOTLY_COLORS["text_secondary"],
+            )
+        )
+```
+
+In `_retirement_income_chart`, compute a per-year effective tax rate alongside the existing
+`gross`/`net` lists (needs `retirement_taxes_paid` added to the `paired` tuple/required-fields
+list, same pattern as every other field already there):
+
+```python
+tax_rate = [
+    (p[6] / p[1]) if p[1] else None      # p[6] = retirement_taxes_paid, p[1] = total_withdrawal_income (gross)
+    for p in paired
+]
+```
+
+Mirrors `average_retirement_tax_rate`'s own "a year with `total_withdrawal_income <= 0` doesn't
+get a rate" convention exactly, just per-point (`None`, so Plotly draws a gap there) rather than
+excluded from an average. Add the trace, passed onto the new secondary axis via `yaxis="y2"`:
+
+```python
+fig.add_trace(
+    go.Scatter(
+        x=years,
+        y=tax_rate,
+        mode="lines+markers",
+        name="Effective tax rate",
+        yaxis="y2",
+        line=dict(width=2, color=_PLOTLY_COLORS["text_primary"], dash="dot"),
+        marker=dict(size=4, color=_PLOTLY_COLORS["text_primary"]),
+        hovertemplate="<b>%{y:.1%}</b><extra>Effective tax rate</extra>",
+    )
+)
+```
+
+No end-of-line dollar label for this trace (`_dollar_end_label` hardcodes a `$` format, and this is
+a percent, not a dollar figure — leave it without one, same as the Tax wash band and other pure-
+context lines on this chart already have no end label). Then pass the new `_style_chart` parameter
+at this chart's own call site: `_style_chart(fig, title=title, height=480, y_max=y_max,
+allow_negative=has_negative, secondary_y_title="Effective tax rate")`.
+
+**Color flagged, not a blind pick**: `_PLOTLY_COLORS["text_primary"]` (a near-black/near-white
+neutral depending on the dark theme, already used for chart TITLES elsewhere on this tab, never yet
+for a data series) is proposed here specifically because it is guaranteed visually distinct from
+every dollar-line hue already on this chart (blue, teal, yellow/amber, and the repurposed violet)
+without needing a new CVD validation pass — a percent-axis context line reads naturally as
+"different in kind," not competing with the dollar series, the same reasoning already used
+elsewhere on this tab for muted/neutral reference lines. This is a reasonable default, not a
+hard requirement — flagging it explicitly in case the user has a preference once they see it
+rendered.
+
+### Tests
+
+No `modules/` changes at all in this note, and this tab's chart-building functions
+(`_retirement_income_chart`, `_style_chart`) have no existing unit tests to update (confirmed — no
+`tests/test_projection_tab.py` or similar exists; this file's Plotly figure builders are exercised
+only by manually running the Streamlit app, same as every other chart on this tab today).
+`average_retirement_tax_rate` itself is unchanged and already fully covered
+(`tests/test_projection.py`, lines ~2979-3007) — reusing it here needs no new test.
+
+### Cost assessment
+
+Small and additive: one new import, two new `st.metric` calls (reusing an existing function, one
+possibly reusing an already-computed local variable), one dict key renamed (not added) in
+`_PLOTLY_COLORS`, one trace removed and one trace added in `_retirement_income_chart` (net zero
+trace count), one new per-year list comprehension reusing an already-present row field, one new
+opt-in trace on a new opt-in axis, and two new optional `_style_chart` parameters that default to
+today's exact single-axis behavior for every other chart on the page.
 
 
 ## Queued request from user (2026-09-07) — Roth IRA / Traditional IRA "custom" dollar amount: one flat entry, not one per year
